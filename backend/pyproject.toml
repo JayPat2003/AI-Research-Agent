@@ -1,0 +1,61 @@
+[project]
+name = "ai-research-agent"
+version = "0.1.0"
+description = "AI Research & Decision Intelligence Platform — local MVP"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.32.0",
+  "pydantic>=2.9.0",
+  "pydantic-settings>=2.6.0",
+  "sqlalchemy[asyncio]>=2.0.36",
+  "asyncpg>=0.30.0",
+  "psycopg[binary]>=3.2.0",
+  "pgvector>=0.3.6",
+  "alembic>=1.14.0",
+  "redis>=5.2.0",
+  "httpx>=0.28.0",
+  "python-multipart>=0.0.18",
+  "langchain>=0.3.14",
+  "langchain-core>=0.3.29",
+  "langchain-google-genai>=2.0.8",
+  "langchain-openai>=0.3.0",
+  "langgraph>=0.2.60",
+  "llama-index-core>=0.12.10",
+  "llama-index-readers-file>=0.4.0",
+  "llama-index-readers-web>=0.3.0",
+  "fastembed>=0.4.2",
+  "onnxruntime>=1.20.0",
+  "numpy>=2.0.0",
+  "ddgs>=7.0.0",
+  "arxiv>=2.1.3",
+  "trafilatura>=2.0.0",
+  "beautifulsoup4>=4.12.0",
+  "pypdf>=5.1.0",
+  "python-docx>=1.1.2",
+  "tiktoken>=0.8.0",
+  "sqlglot>=26.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.0",
+  "pytest-asyncio>=0.24.0",
+]
+
+[build-system]
+requires = ["setuptools>=75.0.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

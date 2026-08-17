@@ -1,0 +1,4 @@
+# ruff / pytest
+*.pyc
+__pycache__/
+.venv/

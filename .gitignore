@@ -216,3 +216,25 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Node
+node_modules/
+frontend/.next/
+frontend/out/
+
+# Models / caches
+.cache/
+models/
+hf-cache/
+
+# Local data
+data/uploads/*
+!data/uploads/.gitkeep
+data/tmp/
+
+# macOS / editors
+.DS_Store
+.idea/
+
+# Docker
+*.log

@@ -1,0 +1,10 @@
+# Recreate on Linux or Mac:  conda env create -f environment.yml
+# Then:                      conda activate ai-research-agent
+name: ai-research-agent
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - -e ./backend[dev]
