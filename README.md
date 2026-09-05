@@ -10,11 +10,11 @@ This is an analyst tool, not medical advice.
 
 ```
 User → Next.js → FastAPI
-              → Router (Gemini 2.5 Flash-Lite)
+              → Router (Gemini 3.5 Flash-Lite)
               → Retrieval Agent  (hybrid RAG: pgvector + Postgres FTS + RRF + BGE rerank)
               → Research Agent   (DuckDuckGo, arXiv, Semantic Scholar)
               → Data Agent       (read-only Text-to-SQL on demo `clinical_trials`)
-              → Report Generator (Gemini 2.5 Flash)
+              → Report Generator (Gemini 3.5 Flash)
               → Critic Agent     (pass / retrieve-again, max 2 retries)
               → Cited report + conversation memory
 ```
@@ -73,8 +73,8 @@ Embedding and reranker weights download once per machine into `./models`.
 
 | Role | Default | Notes |
 | --- | --- | --- |
-| Research, critic, report | `gemini-2.5-flash` | Long context, structured citations |
-| Router, SQL, conversation summary | `gemini-2.5-flash-lite` | Conserves free-tier quota |
+| Research, critic, report | `gemini-3.5-flash` | Long context, structured citations |
+| Router, SQL, conversation summary | `gemini-3.5-flash-lite` | Conserves free-tier quota |
 | Embeddings | local `BAAI/bge-small-en-v1.5` (fastembed) | No embedding API cost |
 | Rerank | local `BAAI/bge-reranker-base` | Falls back to MiniLM if needed |
 
