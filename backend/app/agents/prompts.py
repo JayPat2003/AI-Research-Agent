@@ -6,11 +6,11 @@ intents:
 - knowledge: answer from the private knowledge base
 - research: synthesize literature / latest approaches, usually needs web + KB
 - comparison: compare methods, therapies, trials, datasets, or vendors
-- data: counts and filters over structured tables (clinical_trials in the demo database)
+- data: counts and filters over the local trial catalog (JSON)
 - calculation: numeric reasoning, still may need retrieval
 - web: primarily needs live web/papers
 
-Set needs_retrieval true unless the user only wants a SQL catalog count.
+Set needs_retrieval true unless the user only wants a catalog count.
 Set needs_web true for latest/SOTA/news/papers that may not be in the private KB.
 Set needs_sql true only when the question is about the trial catalog
 (how many trials, which GLP-1 studies, completed vs ongoing, endpoint counts).
@@ -45,6 +45,11 @@ If you fail the draft, list missing_queries that would retrieve the needed evide
 Be strict but do not fail a careful, hedged answer that cites what it has.
 """
 
-SQL_SYSTEM = """You write PostgreSQL SELECT queries only.
-Use the provided schema. Never modify data.
+SQL_SYSTEM = """You write a single read-only SELECT if a SQL table is available. Prefer catalog filters in the CLI pipeline."""
+
+CATALOG_SYSTEM = """You filter a local clinical-trials catalog.
+Return JSON filters only. Use null for unused fields.
+Valid drug_class values: SGLT2, GLP-1, GIP/GLP-1, biguanide
+Valid condition values: type 2 diabetes, heart failure, chronic kidney disease, overweight or obesity
+Valid status values: completed, ongoing
 """

@@ -19,6 +19,14 @@ class SQLDecision(BaseModel):
     explanation: str
 
 
+class CatalogFilter(BaseModel):
+    drug_class: str | None = None
+    condition: str | None = None
+    status: str | None = None
+    primary_endpoint: str | None = None
+    explanation: str = ""
+
+
 class Citation(BaseModel):
     chunk_id: str | None = None
     title: str

@@ -1,4 +1,4 @@
-"""LangChain LLM factory. Gemini is default; Groq is the free fallback."""
+"""LangChain LLM factory. Gemini API only."""
 
 from __future__ import annotations
 
@@ -53,32 +53,6 @@ class RetryingChat:
 
 def get_chat_model(role: Role = "research") -> RetryingChat:
     settings = get_settings()
-    provider = settings.llm_provider.lower()
-
-    if provider == "groq":
-        from langchain_openai import ChatOpenAI
-
-        model = settings.groq_research_model if role == "research" else settings.groq_fast_model
-        llm = ChatOpenAI(
-            model=model,
-            api_key=settings.groq_api_key or "missing",
-            base_url="https://api.groq.com/openai/v1",
-            temperature=0.1,
-        )
-        return RetryingChat(llm)
-
-    if provider == "ollama":
-        from langchain_openai import ChatOpenAI
-
-        model = settings.llm_research_model if role == "research" else settings.llm_fast_model
-        llm = ChatOpenAI(
-            model=model,
-            api_key="ollama",
-            base_url="http://localhost:11434/v1",
-            temperature=0.1,
-        )
-        return RetryingChat(llm)
-
     from langchain_google_genai import ChatGoogleGenerativeAI
 
     model = settings.llm_research_model if role == "research" else settings.llm_fast_model

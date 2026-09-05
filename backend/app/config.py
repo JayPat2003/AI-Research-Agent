@@ -6,15 +6,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=(".env", "../.env"),
+        extra="ignore",
+    )
 
     gemini_api_key: str = ""
-    groq_api_key: str = ""
     llm_provider: str = "gemini"
-    llm_research_model: str = "gemini-2.5-flash"
-    llm_fast_model: str = "gemini-2.5-flash-lite"
-    groq_research_model: str = "openai/gpt-oss-120b"
-    groq_fast_model: str = "openai/gpt-oss-20b"
+    llm_research_model: str = "gemini-3.5-flash"
+    llm_fast_model: str = "gemini-3.5-flash-lite"
 
     embedding_backend: str = "bge"
     embedding_model: str = "BAAI/bge-small-en-v1.5"
@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     upload_dir: str = "../data/uploads"
     seed_dir: str = "../data/seed"
     eval_path: str = "../data/eval/questions.jsonl"
+    chroma_path: str = "../data/chroma"
+    catalog_path: str = "../data/catalog/clinical_trials.json"
+    memory_dir: str = "../data/memory"
 
     api_host: str = "0.0.0.0"
     api_port: int = 8000
