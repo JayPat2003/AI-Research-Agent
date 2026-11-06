@@ -11,7 +11,7 @@ variable "project_name" {
 }
 
 variable "instance_type" {
-  description = "EC2 size. Use t3.micro for Free Tier portfolio demos (with aws-free compose). t3.large for full BGE stack."
+  description = "EC2 size. Use t3.micro for Free Tier (with aws-free compose). t3.large for full BGE stack."
   type        = string
   default     = "t3.micro"
 }

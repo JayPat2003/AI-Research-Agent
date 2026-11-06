@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Portfolio workflow: provision Free Tier box → deploy → print checklist → YOU destroy after recording.
-# Goal: prove AWS skills without leaving a $50–90/mo bill running.
+# Provision a Free Tier EC2 host, deploy the stack, print the public URL.
+# Tear down with ./scripts/aws-destroy.sh when finished.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-echo "=== AWS demo day (Free Tier profile) ==="
-echo "This will create real AWS resources. Destroy them when you finish filming."
+echo "=== AWS Free Tier deploy ==="
+echo "Creates real AWS resources. Run ./scripts/aws-destroy.sh when finished."
 echo
 
 if [[ ! -f .env.aws ]]; then
@@ -28,19 +28,9 @@ PUBLIC_IP="$(cd infra/aws/terraform && terraform output -raw public_ip)"
 
 cat <<EOF
 
-============================================================
-SHOWCASE CHECKLIST (record a 2–4 min Loom / screen capture)
-============================================================
-1. Browser:  http://${PUBLIC_IP}
-2. Health:   curl http://${PUBLIC_IP}/health
-3. Run one research question in the UI
-4. Show this repo: Terraform + docker-compose.aws*.yml + deploy scripts
-5. Show AWS console: EC2 instance, VPC, S3 uploads bucket, Elastic IP
+App URL:  http://${PUBLIC_IP}
+Health:   curl http://${PUBLIC_IP}/health
 
-THEN STOP THE BILL (do not skip):
+Tear down when done:
   ./scripts/aws-destroy.sh
-
-Typical cost if destroyed same day: well under \$1–3 on Free Tier-eligible accounts
-(mostly nothing if still inside the 12-month Free Tier for EC2/EBS).
-============================================================
 EOF

@@ -61,7 +61,6 @@ AI-Research-Agent/
 ├── docker-compose.aws.yml   # AWS overlay (Caddy, Gemini-only)
 ├── docker-compose.aws-free.yml  # Free Tier overlay (hash + mem caps)
 ├── cli.py                   # Optional Chroma CLI pipeline
-├── DEPLOY_AWS.md            # Full AWS runbook
 ├── .env.example             # Local secrets template → copy to .env
 └── .env.aws.example         # AWS secrets template → copy to .env.aws
 ```
@@ -70,7 +69,7 @@ AI-Research-Agent/
 | --- | --- | --- |
 | `docker-compose.yml` | Yes | Local default |
 | `docker-compose.aws.yml` | Yes | EC2 + Caddy |
-| `docker-compose.aws-free.yml` | Yes | `t3.micro` portfolio demos |
+| `docker-compose.aws-free.yml` | Yes | Low-cost `t3.micro` deploy (hash embeddings) |
 | `cli.py` + `backend/app/pipeline/` | Yes (optional) | Legacy Chroma path; main product is LangGraph + pgvector API |
 | `.env` / `.env.aws` | Never commit | Gitignored |
 
@@ -154,28 +153,27 @@ Fully offline: `LLM_PROVIDER=ollama`. Embeddings stay local BGE (or `hash`).
 
 ---
 
-## Deploy on AWS (portfolio / Free Tier)
+## Deploy on AWS
 
-You do **not** need a paid instance left running. Default: **`t3.micro` + hash embeddings → demo → destroy**. Full guide: **[DEPLOY_AWS.md](DEPLOY_AWS.md)**.
+Default path targets AWS Free Tier (`t3.micro`, hash embeddings, tear down when finished):
 
 ```bash
 ./scripts/aws-bootstrap-tools.sh
 aws configure
 cp .env.aws.example .env.aws    # set GEMINI_API_KEY
-./scripts/aws-demo-day.sh      # Free Tier profile
-# …record Loom / screenshots…
-./scripts/aws-destroy.sh       # stop billing
+./scripts/aws-demo-day.sh
+./scripts/aws-destroy.sh       # tear down when done
 ```
 
-Compose layering on EC2:
+On the EC2 host the stack is:
 
 ```text
 docker-compose.yml + docker-compose.aws.yml + docker-compose.aws-free.yml
 ```
 
-CI (no EC2 spend): [`.github/workflows/aws-iac.yml`](.github/workflows/aws-iac.yml) runs `terraform fmt/validate` and compose config checks.
+For full BGE quality, use `terraform.tfvars.paid.example` (`t3.large`) and `AWS_FREE=0 ./scripts/aws-deploy.sh`.
 
-Phase 2 (later): ECS Fargate, RDS pgvector, ElastiCache, SQS, Cognito, paid `t3.large` + full BGE.
+CI: [`.github/workflows/aws-iac.yml`](.github/workflows/aws-iac.yml) validates Terraform and compose config.
 
 ---
 
