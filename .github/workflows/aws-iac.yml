@@ -1,0 +1,46 @@
+# Proves AWS/IaC skill in CI without paying for a running EC2 box.
+name: AWS IaC checks
+
+on:
+  push:
+    paths:
+      - "infra/aws/**"
+      - "docker-compose*.yml"
+      - "scripts/aws-*.sh"
+      - ".github/workflows/aws-iac.yml"
+  pull_request:
+    paths:
+      - "infra/aws/**"
+      - "docker-compose*.yml"
+      - "scripts/aws-*.sh"
+      - ".github/workflows/aws-iac.yml"
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/aws/terraform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.0"
+      - name: terraform fmt
+        run: terraform fmt -check -recursive
+      - name: terraform init (no backend)
+        run: terraform init -backend=false
+      - name: terraform validate
+        run: terraform validate
+
+  compose-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate free-tier compose merge
+        run: |
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.aws.yml \
+            -f docker-compose.aws-free.yml \
+            config >/dev/null

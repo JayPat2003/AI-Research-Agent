@@ -71,3 +71,39 @@ def test_chunking_produces_overlap_units():
     chunks = chunk_documents([Document(text=text, metadata={"title": "t", "source": "md"})])
     assert len(chunks) >= 2
     assert chunks[0]["title"] == "t"
+
+
+def test_topical_overlap_rejects_off_domain_seed():
+    from app.retrieval.service import _topical_overlap
+
+    glp_chunk = RetrievedChunk(
+        chunk_id="1",
+        document_id="d",
+        content="GLP-1 receptor agonists reduce MACE in type 2 diabetes CVOTs such as LEADER and heart failure hospitalizations.",
+        title="GLP-1 outcomes trials",
+        source="seed",
+        url=None,
+        page_number=None,
+        score=0.9,
+        rank=1,
+    )
+    assert _topical_overlap("acute myocardial infarction STEMI reperfusion guidelines", glp_chunk) < 0.15
+    assert _topical_overlap("heart attack emergency management", glp_chunk) < 0.15
+    assert _topical_overlap("GLP-1 LEADER MACE diabetes", glp_chunk) >= 0.15
+
+
+def test_google_scholar_html_parser():
+    from app.tools.web import _parse_scholar_html
+
+    html = """
+    <div class="gs_r gs_or gs_scl">
+      <h3 class="gs_rt"><a href="https://example.com/paper">Acute MI reperfusion</a></h3>
+      <div class="gs_a">Smith A - Circulation - 2020</div>
+      <div class="gs_rs">Primary PCI is preferred for STEMI when timely.</div>
+    </div>
+    """
+    hits = _parse_scholar_html(html, max_results=5)
+    assert len(hits) == 1
+    assert hits[0]["title"] == "Acute MI reperfusion"
+    assert hits[0]["source"] == "google_scholar"
+    assert hits[0]["published"] == "2020"

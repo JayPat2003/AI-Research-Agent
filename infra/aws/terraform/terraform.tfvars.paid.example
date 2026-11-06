@@ -1,0 +1,12 @@
+# Paid / full-quality stack (BGE embeddings + reranker). Expect ~$50–90/mo if left running.
+aws_region      = "us-east-1"
+project_name    = "ai-research-agent"
+instance_type   = "t3.large"
+root_volume_gb  = 40
+enable_swap_gb  = 0
+
+ssh_cidr        = "0.0.0.0/0"
+app_cidr        = "0.0.0.0/0"
+key_name        = ""
+create_key_pair = true
+domain_name     = ""

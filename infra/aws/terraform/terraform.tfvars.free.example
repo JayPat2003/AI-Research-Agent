@@ -1,0 +1,13 @@
+# Free Tier / portfolio defaults — copy to terraform.tfvars
+aws_region      = "us-east-1"
+project_name    = "ai-research-agent"
+instance_type   = "t3.micro"   # Free Tier eligible on many new accounts (12 months)
+root_volume_gb  = 30           # often covered by Free Tier EBS allotment
+enable_swap_gb  = 2            # required for Compose on 1GB RAM
+
+# Lock SSH to your IP when you can: "x.x.x.x/32"
+ssh_cidr        = "0.0.0.0/0"
+app_cidr        = "0.0.0.0/0"
+key_name        = ""
+create_key_pair = true
+domain_name     = ""

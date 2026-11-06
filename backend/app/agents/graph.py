@@ -22,7 +22,7 @@ from app.memory.store import (
 from app.retrieval.interface import RetrievedChunk
 from app.retrieval.service import RetrievalService
 from app.tools.sql import SCHEMA_HINT, run_select
-from app.tools.web import search_arxiv, search_semantic_scholar, search_web
+from app.tools.web import search_arxiv, search_google_scholar, search_semantic_scholar
 
 logger = logging.getLogger(__name__)
 
@@ -128,7 +128,10 @@ class ResearchGraph:
 
     async def _node_retrieve(self, state: AgentState) -> dict[str, Any]:
         if not state.get("needs_retrieval") and not state.get("extra_queries"):
-            return {"chunks": state.get("chunks") or [], "events": [self._evt("retrieve", "Skipped private KB retrieval")]}
+            return {
+                "chunks": state.get("chunks") or [],
+                "events": [self._evt("retrieve", "Skipped private KB retrieval")],
+            }
         query = state.get("rewritten_query") or state["query"]
         queries = [query, *(state.get("extra_queries") or [])]
         seen: dict[str, dict[str, Any]] = {c["chunk_id"]: c for c in (state.get("chunks") or [])}
@@ -137,31 +140,54 @@ class ResearchGraph:
             for chunk in found:
                 seen[chunk.chunk_id] = chunk_to_dict(chunk)
         chunks = list(seen.values())
-        return {
+        # Off-topic seed hits (e.g. GLP-1 corpus for an MI question) → empty KB + force papers.
+        weak_kb = len(chunks) == 0
+        top_score = max((float(c.get("score") or 0.0) for c in chunks), default=-999.0)
+        if chunks and top_score < self.settings.retrieval_min_score:
+            chunks = []
+            weak_kb = True
+        out: dict[str, Any] = {
             "chunks": chunks,
             "extra_queries": [],
-            "events": [self._evt("retrieve", f"Retrieved {len(chunks)} unique chunks", {"n": len(chunks)})],
+            "events": [
+                self._evt(
+                    "retrieve",
+                    (
+                        f"Retrieved {len(chunks)} on-topic chunks"
+                        if not weak_kb
+                        else "Private KB had no on-topic chunks — will lean on Google Scholar / papers"
+                    ),
+                    {"n": len(chunks), "weak_kb": weak_kb, "top_score": top_score if chunks else None},
+                )
+            ],
         }
+        if weak_kb:
+            out["needs_web"] = True
+        return out
 
     async def _node_research(self, state: AgentState) -> dict[str, Any]:
         if not state.get("needs_web"):
             return {
                 "web_results": state.get("web_results") or [],
-                "events": [self._evt("research", "Skipped live web/paper search")],
+                "events": [self._evt("research", "Skipped live paper search")],
             }
         query = state.get("rewritten_query") or state["query"]
-        web = search_web(query, max_results=5)
+        # Prefer Google Scholar; keep arXiv + Semantic Scholar as academic backups.
+        gscholar = search_google_scholar(query, max_results=6)
         papers = search_arxiv(query, max_results=4)
-        scholar = search_semantic_scholar(
+        semantic = search_semantic_scholar(
             query, max_results=4, api_key=self.settings.semantic_scholar_api_key or None
         )
-        combined = web + papers + scholar
+        combined = gscholar + papers + semantic
         return {
             "web_results": combined,
             "events": [
                 self._evt(
                     "research",
-                    f"Found {len(web)} web, {len(papers)} arXiv, {len(scholar)} Semantic Scholar results",
+                    (
+                        f"Found {len(gscholar)} Google Scholar, {len(papers)} arXiv, "
+                        f"{len(semantic)} Semantic Scholar results"
+                    ),
                     {"n": len(combined)},
                 )
             ],
@@ -198,7 +224,7 @@ class ResearchGraph:
             f"Original question:\n{state['query']}\n\n"
             f"Resolved question:\n{state.get('rewritten_query')}\n\n"
             f"Retrieved chunks:\n{_format_chunks(state.get('chunks') or [])}\n\n"
-            f"Web and paper results:\n{_format_web(state.get('web_results') or [])}\n\n"
+            f"Google Scholar and paper results:\n{_format_web(state.get('web_results') or [])}\n\n"
             f"SQL result:\n{json.dumps(sql, default=str)[:4000]}\n\n"
             "Produce the cited report JSON."
         )
@@ -256,7 +282,8 @@ class ResearchGraph:
             "retries": retries,
             "extra_queries": extra,
             "needs_retrieval": True if not passed else state.get("needs_retrieval", True),
-            "needs_web": False if not passed else state.get("needs_web", False),
+            # On critic fail, re-query Google Scholar / papers — do not disable live search.
+            "needs_web": True if not passed else state.get("needs_web", False),
             "needs_sql": False if not passed else state.get("needs_sql", False),
             "events": [
                 self._evt(

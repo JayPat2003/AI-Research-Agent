@@ -236,5 +236,15 @@ data/tmp/
 .DS_Store
 .idea/
 
+# AWS / Terraform
+.env.aws
+infra/aws/terraform/.terraform/
+infra/aws/terraform/.terraform.lock.hcl
+infra/aws/terraform/terraform.tfvars
+infra/aws/terraform/*.tfstate
+infra/aws/terraform/*.tfstate.*
+infra/aws/terraform/*.pem
+infra/aws/terraform/crash.log
+
 # Docker
 *.log

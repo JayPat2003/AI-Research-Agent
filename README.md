@@ -1,10 +1,12 @@
 # AI Research & Decision Intelligence Platform
 
-Give the system a complex research question. Specialized agents search a private knowledge base and public sources, cross-check evidence, and return a **cited decision briefing**.
+Ask a complex research question. Multi-agent pipeline searches a **private knowledge base** and **public literature**, optionally queries structured trial data, cross-checks evidence, and returns a **cited decision briefing**.
 
-The agents are domain-agnostic. This repository includes a **public healthcare demo corpus** (cardiometabolic outcomes trials: GLP-1 vs SGLT2) so the stack can be run without proprietary data. Replace `data/seed/` to point the same pipeline at another field.
+Agents are domain-agnostic. This repo ships a **public healthcare demo corpus** (GLP-1 vs SGLT2 cardiometabolic outcomes) so you can run without proprietary data. Swap `data/seed/` for another field.
 
-This is an analyst tool, not medical advice.
+Analyst tool only — **not medical advice**.
+
+---
 
 ## Architecture
 
@@ -12,77 +14,172 @@ This is an analyst tool, not medical advice.
 User → Next.js → FastAPI
               → Router (Gemini 3.5 Flash-Lite)
               → Retrieval Agent  (hybrid RAG: pgvector + Postgres FTS + RRF + BGE rerank)
-              → Research Agent   (DuckDuckGo, arXiv, Semantic Scholar)
-              → Data Agent       (read-only Text-to-SQL on demo `clinical_trials`)
+              → Research Agent   (Google Scholar, arXiv, Semantic Scholar)
+              → Data Agent       (read-only Text-to-SQL on demo clinical_trials)
               → Report Generator (Gemini 3.5 Flash)
               → Critic Agent     (pass / retrieve-again, max 2 retries)
               → Cited report + conversation memory
 ```
 
-LangChain / LangGraph own agents, tools, and structured output. LlamaIndex owns document loading, cleaning, and chunking.
+- **LangChain / LangGraph** — agents, tools, structured output  
+- **LlamaIndex** — document load / clean / chunk  
+- **LLMs** — Gemini (primary) + optional local Ollama fallback  
+- **Embeddings** — local BGE (`fastembed`); `hash` mode for tests / Free Tier AWS  
+- **No AWS Bedrock** — AWS is used for hosting (EC2/VPC/S3), not for foundation models  
+
+---
+
+## Repository layout
+
+```
+AI-Research-Agent/
+├── backend/                 # FastAPI + LangGraph agents + RAG + worker
+│   ├── app/
+│   │   ├── agents/          # Graph, prompts, schemas, invoke
+│   │   ├── api/             # HTTP routes + request schemas
+│   │   ├── db/              # SQLAlchemy models, session, SQL seed
+│   │   ├── eval/            # Retrieval / generation evaluation
+│   │   ├── ingestion/       # LlamaIndex loaders + Redis job queue
+│   │   ├── llm/             # Gemini / Ollama clients + embeddings
+│   │   ├── memory/          # Redis short-term + prefs helpers
+│   │   ├── pipeline/        # Legacy Chroma dense-RAG path (used by cli.py)
+│   │   ├── retrieval/       # pgvector + FTS + RRF + rerank
+│   │   └── tools/           # Web literature + guarded Text-to-SQL
+│   ├── tests/
+│   └── Dockerfile
+├── frontend/                # Next.js 15 research workspace UI
+├── data/
+│   ├── seed/                # Demo markdown corpus (auto-ingested)
+│   ├── eval/                # Eval questions
+│   └── uploads/             # User uploads (gitignored)
+├── infra/aws/
+│   ├── terraform/           # VPC, EC2, EIP, SG, S3, IAM
+│   └── caddy/               # Reverse proxy config
+├── scripts/                 # aws-bootstrap / provision / deploy / destroy / demo-day
+├── .github/workflows/       # Terraform + compose CI (no cloud spend)
+├── docker-compose.yml       # Local / base stack
+├── docker-compose.aws.yml   # AWS overlay (Caddy, Gemini-only)
+├── docker-compose.aws-free.yml  # Free Tier overlay (hash + mem caps)
+├── cli.py                   # Optional Chroma CLI pipeline
+├── DEPLOY_AWS.md            # Full AWS runbook
+├── .env.example             # Local secrets template → copy to .env
+└── .env.aws.example         # AWS secrets template → copy to .env.aws
+```
+
+| Path | Keep? | Notes |
+| --- | --- | --- |
+| `docker-compose.yml` | Yes | Local default |
+| `docker-compose.aws.yml` | Yes | EC2 + Caddy |
+| `docker-compose.aws-free.yml` | Yes | `t3.micro` portfolio demos |
+| `cli.py` + `backend/app/pipeline/` | Yes (optional) | Legacy Chroma path; main product is LangGraph + pgvector API |
+| `.env` / `.env.aws` | Never commit | Gitignored |
+
+---
 
 ## Requirements
 
-- **Linux** (x86_64) or **macOS** (Intel or Apple Silicon)
-- Python 3.12 (Conda via [`environment.yml`](environment.yml), or the API container)
-- Docker and Docker Compose
-- Node.js 22 for a local frontend dev server
-- A free [Gemini API key](https://aistudio.google.com/apikey)
+- Linux (x86_64) or macOS (Intel / Apple Silicon)  
+- Python 3.12 via Conda ([`environment.yml`](environment.yml)) or the API container  
+- Docker + Docker Compose  
+- Node.js 22 (local frontend only)  
+- Free [Gemini API key](https://aistudio.google.com/apikey)  
 
-On **Apple Silicon**, use a native `arm64` Conda distribution (for example Miniforge). `uname -m` should report `arm64`.
+On Apple Silicon use a native `arm64` Conda (e.g. Miniforge). `uname -m` should report `arm64`.
 
-Git ignores machine-local artifacts: `.env`, `models/`, `node_modules/`, `data/uploads/`, and Docker volumes. After a fresh clone, recreate the Conda env, copy `.env.example` → `.env`, and let seed ingestion rebuild the demo index.
+---
 
-## Quick start
+## Quick start (local)
 
 ```bash
 git clone https://github.com/JayPat2003/AI-Research-Agent.git
 cd AI-Research-Agent
 conda env create -f environment.yml
 conda activate ai-research-agent
-cp .env.example .env   # set GEMINI_API_KEY
+cp .env.example .env          # set GEMINI_API_KEY
 docker compose up --build
 ```
 
-UI: [http://localhost:3000](http://localhost:3000) · API health: [http://localhost:8000/health](http://localhost:8000/health)
+- UI: [http://localhost:3000](http://localhost:3000)  
+- API health: [http://localhost:8000/health](http://localhost:8000/health)  
 
 Example question:
 
 > Compare GLP-1 receptor agonists and SGLT2 inhibitors for adults with type 2 diabetes and established cardiovascular disease. What do the major outcomes trials show, which populations were studied, and which class is more suitable as the first add-on in a research briefing for a clinical-operations team?
 
-Follow up with “What about kidney outcomes?” The router resolves that against conversation summary and recent turns, not a raw transcript dump.
+Follow up with “What about kidney outcomes?” — the router uses conversation summary + recent turns.
 
-If `pip` still resolves to `~/.local` after `conda activate`, run `export PYTHONNOUSERSITE=1`.
+If `pip` still hits `~/.local` after `conda activate`: `export PYTHONNOUSERSITE=1`.
 
-### API on Conda, Postgres and Redis in Docker
+### Hybrid: API on Conda, Postgres + Redis in Docker
 
 ```bash
 docker compose up postgres redis
 conda activate ai-research-agent
-cd backend
-uvicorn app.main:app --reload --port 8000
-# second terminal
-python -m app.worker
-# third terminal
-cd frontend && npm install && npm run dev
+cd backend && uvicorn app.main:app --reload --port 8000
+# other terminals: python -m app.worker · cd frontend && npm install && npm run dev
 ```
 
-Embedding and reranker weights download once per machine into `./models`.
+BGE weights download once into `./models`.
 
-## Model stack (free APIs)
+---
+
+## Env files
+
+| File | Purpose |
+| --- | --- |
+| `.env.example` → `.env` | **Local** development |
+| `.env.aws.example` → `.env.aws` | **AWS** deploy only (`aws-deploy.sh` / `aws-demo-day.sh`) |
+
+Do not mix them. Local uses `localhost`; AWS uses Docker service hostnames.
+
+---
+
+## Model stack
 
 | Role | Default | Notes |
 | --- | --- | --- |
-| Research, critic, report | `gemini-3.5-flash` | Long context, structured citations |
-| Router, SQL, conversation summary | `gemini-3.5-flash-lite` | Conserves free-tier quota |
-| Embeddings | local `BAAI/bge-small-en-v1.5` (fastembed) | No embedding API cost |
-| Rerank | local `BAAI/bge-reranker-base` | Falls back to MiniLM if needed |
+| Research, critic, report | `gemini-3.5-flash` | Long context, citations |
+| Router, SQL, summary | `gemini-3.5-flash-lite` | Saves free-tier quota |
+| Ollama research fallback | `qwen2.5:7b` | On Gemini 429 / quota |
+| Ollama fast fallback | `llama3.2:latest` | Router / SQL / summary |
+| Embeddings | `BAAI/bge-small-en-v1.5` | Local; no embedding API cost |
+| Rerank | `BAAI/bge-reranker-base` | MiniLM fallback if needed |
 
-Gemini free-tier RPM is the main constraint. Agent LLM calls are sequential. On `429` responses, set `LLM_PROVIDER=groq` and `GROQ_API_KEY`. Groq has no embeddings; local BGE still handles retrieval.
+```bash
+ollama pull qwen2.5:7b
+ollama pull llama3.2:latest
+```
 
-## Evaluation
+Fully offline: `LLM_PROVIDER=ollama`. Embeddings stay local BGE (or `hash`).
 
-After the knowledge base is seeded:
+---
+
+## Deploy on AWS (portfolio / Free Tier)
+
+You do **not** need a paid instance left running. Default: **`t3.micro` + hash embeddings → demo → destroy**. Full guide: **[DEPLOY_AWS.md](DEPLOY_AWS.md)**.
+
+```bash
+./scripts/aws-bootstrap-tools.sh
+aws configure
+cp .env.aws.example .env.aws    # set GEMINI_API_KEY
+./scripts/aws-demo-day.sh      # Free Tier profile
+# …record Loom / screenshots…
+./scripts/aws-destroy.sh       # stop billing
+```
+
+Compose layering on EC2:
+
+```text
+docker-compose.yml + docker-compose.aws.yml + docker-compose.aws-free.yml
+```
+
+CI (no EC2 spend): [`.github/workflows/aws-iac.yml`](.github/workflows/aws-iac.yml) runs `terraform fmt/validate` and compose config checks.
+
+Phase 2 (later): ECS Fargate, RDS pgvector, ElastiCache, SQS, Cognito, paid `t3.large` + full BGE.
+
+---
+
+## Evaluation & tests
 
 ```bash
 cd backend
@@ -90,25 +187,24 @@ python -m app.eval.run --variant naive
 python -m app.eval.run --variant hybrid
 python -m app.eval.run --variant hybrid_rerank
 python -m app.eval.run --variant hybrid_rerank --generation   # extra Gemini calls
-```
 
-Metrics: Recall@5, Precision@5, MRR, nDCG@5, plus optional faithfulness and citation checks.
-
-```bash
-cd backend
 EMBEDDING_BACKEND=hash python -m pytest -q
 ```
 
-## Demo corpus
+Metrics: Recall@5, Precision@5, MRR, nDCG@5 (+ optional faithfulness / citation checks).
 
-Included: type 2 diabetes treatment classes, SGLT2 and GLP-1 outcomes trials, comparison framing, evidence grading, and a `clinical_trials` table of well-known CVOTs.
-
-Do not commit API keys or proprietary documents. Uploads belong in `data/uploads/` (gitignored).
-
-Deferred: Qdrant as a second vector store, AWS (ECS, RDS, S3, SQS), production GitHub Actions deploy.
+---
 
 ## Ingestion
 
-`POST /ingest/file` · `POST /ingest/url` · `POST /ingest/arxiv` · `POST /ingest/text`
+`POST /ingest/file` · `/ingest/url` · `/ingest/arxiv` · `/ingest/text`
 
-PDF, DOCX, Markdown, HTML, URL, and arXiv ids are parsed with LlamaIndex, chunked (~512 / 64 overlap), embedded locally, and indexed in Postgres (`vector` + `tsvector`). A Redis worker runs ingestion off the request thread.
+PDF, DOCX, Markdown, HTML, URL, and arXiv ids → LlamaIndex → chunk (~512 / 64) → local embed → Postgres (`vector` + `tsvector`). Redis worker runs ingest off the request thread.
+
+---
+
+## Demo corpus
+
+Type 2 diabetes treatment classes, SGLT2 / GLP-1 outcomes trials, comparison framing, evidence grading, and a `clinical_trials` SQL catalog of well-known CVOTs.
+
+Never commit API keys or proprietary docs. Uploads go in `data/uploads/` (gitignored).

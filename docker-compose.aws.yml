@@ -1,0 +1,61 @@
+# AWS / production overlay. Usage on the EC2 host:
+#   docker compose -f docker-compose.yml -f docker-compose.aws.yml up -d --build
+#
+# Expects .env next to these compose files with at least GEMINI_API_KEY set.
+# Security group only exposes 22/80/443 — Compose may still bind 3000/8000 on localhost.
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infra/aws/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+      - web
+    restart: unless-stopped
+
+  api:
+    environment:
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      OLLAMA_FALLBACK: "false"
+      LLM_PROVIDER: gemini
+      HF_HOME: /models
+      UPLOAD_DIR: /data/uploads
+      SEED_DIR: /data/seed
+      EVAL_PATH: /data/eval/questions.jsonl
+    restart: unless-stopped
+
+  worker:
+    environment:
+      OLLAMA_FALLBACK: "false"
+      LLM_PROVIDER: gemini
+      HF_HOME: /models
+      UPLOAD_DIR: /data/uploads
+      SEED_DIR: /data/seed
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      # Same-origin via Caddy — browser calls /query, /ingest, etc. on the public host.
+      args:
+        NEXT_PUBLIC_API_URL: same-origin
+    environment:
+      NEXT_PUBLIC_API_URL: same-origin
+    restart: unless-stopped
+
+  postgres:
+    restart: unless-stopped
+
+  redis:
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

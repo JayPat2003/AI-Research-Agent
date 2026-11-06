@@ -1,0 +1,19 @@
+{
+	# HTTP-only when no domain is set (Elastic IP). With a real domain + DNS A record,
+	# replace :80 with the hostname so Caddy issues Let's Encrypt certs automatically.
+	auto_https disable_redirects
+}
+
+:80 {
+	encode gzip
+
+	# FastAPI routes — keep paths unchanged so NEXT_PUBLIC_API_URL can be same-origin "".
+	@api path /health /query /documents /ingest/* /conversations/* /preferences/*
+	handle @api {
+		reverse_proxy api:8000
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
+}

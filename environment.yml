@@ -1,5 +1,14 @@
-# Recreate on Linux or Mac:  conda env create -f environment.yml
-# Then:                      conda activate ai-research-agent
+# Recreate on Linux or Mac:
+#   conda env create -f environment.yml
+#   conda activate ai-research-agent
+#
+# Update an existing env after dependency changes:
+#   conda env update -f environment.yml --prune
+#
+# Local LLM fallback (optional but recommended):
+#   Install Ollama from https://ollama.com
+#   ollama pull qwen2.5:7b
+#   ollama pull llama3.2:latest
 name: ai-research-agent
 channels:
   - conda-forge

@@ -2,7 +2,11 @@
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+// "" or "same-origin" = browser same-origin (AWS Caddy). Local default is :8000.
+const API =
+  process.env.NEXT_PUBLIC_API_URL === "" || process.env.NEXT_PUBLIC_API_URL === "same-origin"
+    ? ""
+    : process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 const EXAMPLE =
   "Compare GLP-1 receptor agonists and SGLT2 inhibitors for adults with type 2 diabetes and established cardiovascular disease. What do the major outcomes trials show, which populations were studied, and which class is more suitable as the first add-on in a research briefing for a clinical-operations team?";

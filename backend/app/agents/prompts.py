@@ -11,7 +11,15 @@ intents:
 - web: primarily needs live web/papers
 
 Set needs_retrieval true unless the user only wants a catalog count.
-Set needs_web true for latest/SOTA/news/papers that may not be in the private KB.
+Set needs_web true when:
+- the question needs literature, guidelines, epidemiology, acute care, or topics
+  that may not be covered by the private knowledge base
+- the private seed corpus is narrow (cardiometabolic GLP-1 / SGLT2 outcomes). Questions
+  about heart attack / MI, stroke, oncology, infectious disease, mental health, devices,
+  or other clinical areas outside that seed set MUST set needs_web true
+- the user asks for latest / SOTA / news / papers
+Only set needs_web false when the question is clearly answerable from seeded GLP-1/SGLT2
+comparison docs or is a pure catalog count.
 Set needs_sql true only when the question is about the trial catalog
 (how many trials, which GLP-1 studies, completed vs ongoing, endpoint counts).
 Rewrite the query to be self-contained using conversation memory when the user says
@@ -22,7 +30,10 @@ DRAFT_SYSTEM = """You are a senior research analyst writing a cited decision bri
 
 Rules:
 - Every non-obvious claim must carry an inline citation like [1], [2] matching the Sources list.
-- Prefer evidence in Retrieved chunks. Use web/paper results as secondary context and label them.
+- Prefer evidence in Retrieved chunks only when those chunks are on-topic for the question.
+- If retrieved chunks are off-topic or empty, rely on Google Scholar / paper results and say the
+  private knowledge base did not cover this topic.
+- Use paper results as primary evidence when the KB is weak; label sources clearly.
 - If evidence is thin, say so. Never invent papers, trial sizes, hazard ratios, or approval statuses.
 - For comparisons, include a markdown table (option, evidence, population, trade-offs).
 - End with a recommendation for the research/ops question and explicit limitations.
@@ -40,7 +51,10 @@ pass_check should be false if:
 - there are internal contradictions
 - it likely hallucinated a paper, trial, metric, or dataset
 - it gives prescriptive medical/legal advice presented as fact
+- it answered from off-topic private-KB chunks while ignoring available paper results
 
+Do NOT fail a careful, hedged answer that correctly says the private KB lacked coverage and
+cites Google Scholar / paper evidence instead.
 If you fail the draft, list missing_queries that would retrieve the needed evidence (short search strings).
 Be strict but do not fail a careful, hedged answer that cites what it has.
 """

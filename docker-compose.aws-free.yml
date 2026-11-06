@@ -1,0 +1,38 @@
+# Free-tier / portfolio overlay for t3.micro (1GB RAM + swap).
+# Usage on EC2:
+#   docker compose -f docker-compose.yml -f docker-compose.aws.yml -f docker-compose.aws-free.yml up -d --build
+#
+# Trade-offs vs full stack:
+# - EMBEDDING_BACKEND=hash (no BGE model download; retrieval quality is demo-grade only)
+# - Memory caps so the box does not OOM-kill during a short showcase
+# - Still uses Gemini for LLM calls (free Google AI Studio key)
+
+services:
+  api:
+    environment:
+      EMBEDDING_BACKEND: hash
+      OLLAMA_FALLBACK: "false"
+      LLM_PROVIDER: gemini
+      RERANK_K: "5"
+      DENSE_K: "10"
+      SPARSE_K: "10"
+    mem_limit: 512m
+
+  worker:
+    environment:
+      EMBEDDING_BACKEND: hash
+      OLLAMA_FALLBACK: "false"
+      LLM_PROVIDER: gemini
+    mem_limit: 384m
+
+  web:
+    mem_limit: 256m
+
+  postgres:
+    mem_limit: 256m
+
+  redis:
+    mem_limit: 64m
+
+  caddy:
+    mem_limit: 64m

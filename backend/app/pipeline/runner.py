@@ -13,7 +13,7 @@ from app.pipeline.catalog import filter_catalog
 from app.pipeline.chroma_kb import dense_search, rerank
 from app.pipeline.memory import append_and_summarize, format_for_prompt, load
 from app.retrieval.interface import RetrievedChunk
-from app.tools.web import search_arxiv, search_semantic_scholar, search_web
+from app.tools.web import search_arxiv, search_google_scholar, search_semantic_scholar
 
 
 def _banner(step: int, total: int, title: str, why: str) -> None:
@@ -113,14 +113,21 @@ def run_query(question: str, conversation_id: str | None = None) -> dict[str, An
         _banner(3, total, "DENSE RETRIEVAL", "Skipped — router said this is not a knowledge-base question.")
 
     web_results: list[dict[str, Any]] = []
-    if route.needs_web:
-        _banner(4, total, "RESEARCH AGENT", "Public web + arXiv + Semantic Scholar (no paid search API).")
+    # If dense retrieval found nothing on-topic, force live literature search.
+    force_web = route.needs_web or not chunks
+    if force_web:
+        _banner(
+            4,
+            total,
+            "RESEARCH AGENT",
+            "Google Scholar + arXiv + Semantic Scholar (no paid search API).",
+        )
         q = route.rewritten_query or question
-        web = search_web(q, max_results=5)
+        gscholar = search_google_scholar(q, max_results=6)
         papers = search_arxiv(q, max_results=4)
         scholar = search_semantic_scholar(q, max_results=4, api_key=settings.semantic_scholar_api_key or None)
-        web_results = web + papers + scholar
-        print(f"web={len(web)}  arxiv={len(papers)}  scholar={len(scholar)}")
+        web_results = gscholar + papers + scholar
+        print(f"google_scholar={len(gscholar)}  arxiv={len(papers)}  semantic={len(scholar)}")
         for item in web_results:
             print(f"  - {item.get('source')}: {item.get('title')}")
     else:

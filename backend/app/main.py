@@ -35,11 +35,14 @@ async def lifespan(_app: FastAPI):
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    origins = settings.cors_origin_list
+    # Browsers reject credentials with wildcard origins; same-origin Caddy deploys often use "*".
+    allow_credentials = "*" not in origins
     app = FastAPI(title="AI Research & Decision Intelligence Platform", version="0.1.0", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.cors_origin_list,
-        allow_credentials=True,
+        allow_origins=origins or ["*"],
+        allow_credentials=allow_credentials,
         allow_methods=["*"],
         allow_headers=["*"],
     )
