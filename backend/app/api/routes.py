@@ -1,3 +1,11 @@
+"""HTTP API surface for the research platform.
+
+Exposes health, SSE query streaming, async ingest enqueue endpoints, document
+listing, conversation history, and user preferences. Heavy work (parse/embed)
+is delegated to the Redis-backed worker; the query path runs LangGraph in-process
+and streams node events as Server-Sent Events.
+"""
+
 from __future__ import annotations
 
 import json
@@ -30,11 +38,13 @@ router = APIRouter()
 
 @router.get("/health")
 async def health() -> dict[str, str]:
+    """Liveness probe for Compose / load balancers."""
     return {"status": "ok"}
 
 
 @router.post("/query")
 async def query(body: QueryRequest, session: AsyncSession = Depends(get_session)):
+    """Run the research graph and stream node events as SSE (``text/event-stream``)."""
     settings = get_settings()
     user_id = body.user_id or settings.default_user_id
     graph = ResearchGraph(session)
@@ -56,6 +66,7 @@ async def query(body: QueryRequest, session: AsyncSession = Depends(get_session)
 
 
 async def _queue(session: AsyncSession, source_type: str, source: str, extra: dict | None = None) -> IngestJob:
+    """Persist an ingest job row and push the payload onto the Redis queue."""
     job = IngestJob(id=str(uuid.uuid4()), status="queued", source_type=source_type, source=source, extra=extra or {})
     session.add(job)
     await session.commit()
@@ -74,6 +85,7 @@ async def _queue(session: AsyncSession, source_type: str, source: str, extra: di
 
 @router.post("/ingest/file")
 async def ingest_file(file: UploadFile = File(...), session: AsyncSession = Depends(get_session)):
+    """Accept an uploaded file, save under ``UPLOAD_DIR``, enqueue ingestion."""
     settings = get_settings()
     upload_dir = Path(settings.upload_dir)
     upload_dir.mkdir(parents=True, exist_ok=True)
@@ -85,24 +97,28 @@ async def ingest_file(file: UploadFile = File(...), session: AsyncSession = Depe
 
 @router.post("/ingest/url")
 async def ingest_url(body: IngestUrlRequest, session: AsyncSession = Depends(get_session)):
+    """Enqueue ingestion of a remote URL (HTML/PDF handled by the worker)."""
     job = await _queue(session, "url", body.url, {"domain": body.domain, "topic": body.topic, "url": body.url})
     return {"job_id": job.id, "status": job.status}
 
 
 @router.post("/ingest/arxiv")
 async def ingest_arxiv(body: IngestArxivRequest, session: AsyncSession = Depends(get_session)):
+    """Enqueue ingestion by arXiv id."""
     job = await _queue(session, "arxiv", body.arxiv_id, {"domain": body.domain})
     return {"job_id": job.id, "status": job.status}
 
 
 @router.post("/ingest/text")
 async def ingest_text(body: IngestTextRequest, session: AsyncSession = Depends(get_session)):
+    """Enqueue a pasted note as a knowledge-base document."""
     job = await _queue(session, "text", body.text, {"title": body.title, "domain": body.domain})
     return {"job_id": job.id, "status": job.status}
 
 
 @router.get("/ingest/{job_id}")
 async def ingest_status(job_id: str, session: AsyncSession = Depends(get_session)):
+    """Return ingest job status / error / resulting document id."""
     job = await session.get(IngestJob, job_id)
     if not job:
         raise HTTPException(404, "job not found")
@@ -116,6 +132,7 @@ async def ingest_status(job_id: str, session: AsyncSession = Depends(get_session
 
 @router.get("/documents")
 async def list_documents(session: AsyncSession = Depends(get_session)):
+    """List indexed knowledge-base documents (newest first)."""
     rows = (await session.scalars(select(Document).order_by(Document.created_at.desc()))).all()
     return [
         {
@@ -134,6 +151,7 @@ async def list_documents(session: AsyncSession = Depends(get_session)):
 
 @router.get("/conversations/{conversation_id}")
 async def get_conversation(conversation_id: str, session: AsyncSession = Depends(get_session)):
+    """Fetch conversation summary and ordered message history."""
     conv = await session.get(Conversation, conversation_id)
     if not conv:
         raise HTTPException(404, "conversation not found")
@@ -151,6 +169,7 @@ async def get_conversation(conversation_id: str, session: AsyncSession = Depends
 
 @router.put("/preferences/{user_id}")
 async def update_preferences(user_id: str, body: PreferenceUpdate, session: AsyncSession = Depends(get_session)):
+    """Upsert per-user preferences used to bias routing / presentation."""
     pref = await session.get(UserPreference, user_id)
     if pref is None:
         pref = UserPreference(user_id=user_id)

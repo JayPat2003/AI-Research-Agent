@@ -1,4 +1,13 @@
-"""LangChain LLM factory: Gemini primary, local Ollama fallback (no Groq)."""
+"""LangChain LLM factory: Gemini primary, local Ollama fallback (no Groq).
+
+Role mapping:
+- ``research`` — draft / critic (stronger, higher latency)
+- ``fast`` — router / Text-to-SQL (cheaper, lower latency)
+
+When ``LLM_PROVIDER=gemini`` and ``OLLAMA_FALLBACK=true``, quota/transient
+Gemini failures automatically retry against the configured Ollama models so
+local demos keep working under Free Tier rate limits.
+"""
 
 from __future__ import annotations
 
@@ -17,6 +26,7 @@ Role = Literal["research", "fast"]
 
 
 def _is_quota_or_transient(exc: Exception) -> bool:
+    """Return True for errors that warrant retry or provider fallback."""
     text = str(exc).lower()
     return any(
         token in text
@@ -35,7 +45,7 @@ def _is_quota_or_transient(exc: Exception) -> bool:
 
 
 class RetryingChat:
-    """Thin wrapper that retries rate-limit / transient errors sequentially."""
+    """Thin wrapper that retries rate-limit / transient errors with backoff."""
 
     def __init__(self, model: BaseChatModel, max_retries: int = 4) -> None:
         self.model = model
@@ -57,6 +67,7 @@ class RetryingChat:
         raise last_exc  # pragma: no cover
 
     def with_structured_output(self, schema):
+        """Preserve retry behavior when binding a structured-output schema."""
         bound = self.model.with_structured_output(schema)
         return RetryingChat(bound, max_retries=self.max_retries)
 
@@ -94,6 +105,7 @@ class FallbackChat:
 
 
 def _gemini_model(role: Role) -> BaseChatModel:
+    """Construct a Gemini chat model for the given agent role."""
     settings = get_settings()
 
     from langchain_google_genai import ChatGoogleGenerativeAI
@@ -110,7 +122,9 @@ def _gemini_model(role: Role) -> BaseChatModel:
         temperature=0.1,
     )
 
+
 def _ollama_model(role: Role) -> BaseChatModel:
+    """Construct a local Ollama chat model for the given agent role."""
     settings = get_settings()
     from langchain_ollama import ChatOllama
 
@@ -123,6 +137,7 @@ def _ollama_model(role: Role) -> BaseChatModel:
 
 
 def get_chat_model(role: Role = "research") -> RetryingChat | FallbackChat:
+    """Return the process chat model for ``role`` based on ``LLM_PROVIDER``."""
     settings = get_settings()
     provider = (settings.llm_provider or "gemini").strip().lower()
 
@@ -139,11 +154,16 @@ def get_chat_model(role: Role = "research") -> RetryingChat | FallbackChat:
 
 
 def complete(system: str, user: str, role: Role = "research") -> str:
-    llm = get_chat_model(role)
-    msg = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
-    content = msg.content if hasattr(msg, "content") else str(msg)
-    if isinstance(content, list):
-        return "".join(
-            part.get("text", "") if isinstance(part, dict) else str(part) for part in content
-        )
-    return str(content)
+    """Unstructured text completion with an observability span (eval helpers)."""
+    from app.observability.tracing import extract_usage, span
+
+    with span("llm.complete", role=role) as sp:
+        llm = get_chat_model(role)
+        msg = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
+        sp.attrs.update(extract_usage(msg))
+        content = msg.content if hasattr(msg, "content") else str(msg)
+        if isinstance(content, list):
+            return "".join(
+                part.get("text", "") if isinstance(part, dict) else str(part) for part in content
+            )
+        return str(content)

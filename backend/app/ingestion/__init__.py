@@ -1,12 +1,7 @@
-from app.ingestion.loaders import chunk_documents, load_arxiv, load_file, load_url
-from app.ingestion.pipeline import enqueue_job, ingest_payload, seed_directory
+"""Document ingestion pipeline.
 
-__all__ = [
-    "chunk_documents",
-    "load_arxiv",
-    "load_file",
-    "load_url",
-    "enqueue_job",
-    "ingest_payload",
-    "seed_directory",
-]
+Loaders normalize PDF/DOCX/Markdown/HTML/URL/arXiv sources into LlamaIndex
+documents, chunk them, embed them locally, and persist ``Document`` / ``Chunk``
+rows. API requests enqueue Redis jobs; :mod:`app.worker` executes them
+off the request thread.
+"""

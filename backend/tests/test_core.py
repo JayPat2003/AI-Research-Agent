@@ -107,3 +107,33 @@ def test_google_scholar_html_parser():
     assert hits[0]["title"] == "Acute MI reperfusion"
     assert hits[0]["source"] == "google_scholar"
     assert hits[0]["published"] == "2020"
+
+
+def test_citation_precision_recall_and_tool_accuracy():
+    from app.eval.metrics import citation_precision_recall, tool_selection_accuracy
+
+    p, r = citation_precision_recall(["a", "x"], ["a", "b"])
+    assert p == 0.5
+    assert r == 0.5
+    acc = tool_selection_accuracy(
+        {"needs_sql": True, "needs_web": False, "intent": "data"},
+        {"expects_sql": True, "expects_web": False, "expected_intent": "data"},
+    )
+    assert acc == 1.0
+    assert tool_selection_accuracy({}, {}) is None
+
+
+def test_trace_span_records_latency(tmp_path, monkeypatch):
+    from app.observability import tracing
+
+    monkeypatch.setattr(tracing, "_trace_dir", lambda: tmp_path)
+    ctx = tracing.TraceContext(query="test")
+    tracing.set_current_trace(ctx)
+    with tracing.span("unit.test", foo=1) as sp:
+        sp.attrs["ok"] = True
+    assert ctx.spans
+    assert ctx.spans[0].latency_ms is not None
+    assert ctx.spans[0].latency_ms >= 0
+    path = ctx.flush()
+    assert path is not None and path.exists()
+    tracing.set_current_trace(None)

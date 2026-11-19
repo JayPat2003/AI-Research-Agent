@@ -231,6 +231,14 @@ hf-cache/
 data/uploads/*
 !data/uploads/.gitkeep
 data/tmp/
+data/traces/*
+!data/traces/.gitkeep
+
+# Eval artifacts (keep committed snapshot only)
+eval_results/*
+!eval_results/.gitkeep
+!eval_results/baseline_snapshot.json
+
 
 # macOS / editors
 .DS_Store

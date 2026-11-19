@@ -1,3 +1,11 @@
+"""Conversation memory: short-term Redis turns + long-term Postgres summary.
+
+Short-term memory keeps the last ``SHORT_TERM_TURNS`` messages in a Redis list
+(TTL 7 days) for low-latency prompt injection. Long-term memory stores durable
+messages and an LLM-refreshed conversation summary in Postgres. Preferences
+bias routing/presentation without changing core retrieval.
+"""
+
 from __future__ import annotations
 
 import json
@@ -15,6 +23,7 @@ _redis: redis.Redis | None = None
 
 
 async def get_redis() -> redis.Redis:
+    """Return the process-wide async Redis client (lazy singleton)."""
     global _redis
     if _redis is None:
         _redis = redis.from_url(get_settings().redis_url, decode_responses=True)
@@ -26,6 +35,7 @@ def _turns_key(conversation_id: str) -> str:
 
 
 async def ensure_conversation(session: AsyncSession, conversation_id: str | None, user_id: str) -> Conversation:
+    """Return an existing conversation or create a new one (and default prefs)."""
     if conversation_id:
         conv = await session.get(Conversation, conversation_id)
         if conv:
@@ -41,6 +51,7 @@ async def ensure_conversation(session: AsyncSession, conversation_id: str | None
 
 
 async def append_turn(conversation_id: str, role: str, content: str) -> None:
+    """Push a truncated turn onto the Redis short-term ring buffer."""
     settings = get_settings()
     client = await get_redis()
     item = json.dumps({"role": role, "content": content[:4000]})
@@ -51,6 +62,7 @@ async def append_turn(conversation_id: str, role: str, content: str) -> None:
 
 
 async def recent_turns(conversation_id: str) -> list[dict[str, str]]:
+    """Load short-term turns for prompt assembly."""
     client = await get_redis()
     raw = await client.lrange(_turns_key(conversation_id), 0, -1)
     return [json.loads(item) for item in raw]
@@ -64,6 +76,7 @@ async def persist_message(
     citations: list[Any] | None = None,
     extra: dict[str, Any] | None = None,
 ) -> Message:
+    """Persist a durable message row (and optional citation metadata)."""
     msg = Message(
         conversation_id=conversation_id,
         role=role,
@@ -77,6 +90,7 @@ async def persist_message(
 
 
 async def load_memory_bundle(session: AsyncSession, conversation_id: str, user_id: str) -> dict[str, Any]:
+    """Aggregate summary, recent turns, and preferences for the memory node."""
     conv = await session.get(Conversation, conversation_id)
     pref = await session.get(UserPreference, user_id)
     turns = await recent_turns(conversation_id)
@@ -91,6 +105,7 @@ async def load_memory_bundle(session: AsyncSession, conversation_id: str, user_i
 
 
 def format_memory_for_prompt(bundle: dict[str, Any]) -> str:
+    """Render a memory bundle as plain text for router/draft prompts."""
     lines = []
     prefs = bundle.get("preferences") or {}
     if prefs.get("domain"):
@@ -105,7 +120,18 @@ def format_memory_for_prompt(bundle: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-async def refresh_summary(session: AsyncSession, conversation_id: str, bundle: dict[str, Any], latest_q: str, latest_a: str) -> None:
+async def refresh_summary(
+    session: AsyncSession,
+    conversation_id: str,
+    bundle: dict[str, Any],
+    latest_q: str,
+    latest_a: str,
+) -> None:
+    """Update the long-term conversation summary after a completed turn.
+
+    Falls back to a truncated Q→A append if the summarizer LLM fails so memory
+    never fails the user-facing report path.
+    """
     conv = await session.get(Conversation, conversation_id)
     if conv is None:
         return

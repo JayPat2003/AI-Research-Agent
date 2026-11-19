@@ -1,3 +1,15 @@
+"""FastAPI application entrypoint.
+
+Responsibilities:
+- Construct the ASGI app with CORS and API routes.
+- On startup, initialize the database schema and seed the demo
+  ``clinical_trials`` catalog plus any missing files under ``SEED_DIR``.
+  Knowledge-base seeding is best-effort so a missing worker/embedding
+  download does not block API boot.
+
+The module-level ``app`` object is what Uvicorn loads (``app.main:app``).
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -19,12 +31,14 @@ logger = logging.getLogger("api")
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    """Initialize schema and demo data before serving traffic."""
     await init_db()
     async with SessionLocal() as session:
         n = await seed_trials_async(session)
         if n:
             logger.info("Seeded clinical_trials (%s rows)", n)
     try:
+        # Offload sync ingestion (embedding/model load) so the event loop stays responsive.
         seeded = await asyncio.to_thread(seed_directory)
         if seeded:
             logger.info("Seeded knowledge base documents: %s", len(seeded))
@@ -34,6 +48,7 @@ async def lifespan(_app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    """Build a configured FastAPI instance (useful for tests and factories)."""
     settings = get_settings()
     origins = settings.cors_origin_list
     # Browsers reject credentials with wildcard origins; same-origin Caddy deploys often use "*".

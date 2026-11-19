@@ -1,3 +1,10 @@
+"""Postgres + pgvector implementation of :class:`~app.retrieval.interface.VectorStore`.
+
+Dense search uses cosine distance on ``Chunk.embedding``; sparse search uses
+Postgres ``tsvector`` / ``ts_rank_cd`` on ``Chunk.tsv``. Document metadata filters
+are applied via joins to :class:`~app.db.models.Document`.
+"""
+
 from __future__ import annotations
 
 from sqlalchemy import Select, func, select
@@ -8,6 +15,7 @@ from app.retrieval.interface import MetadataFilter, RetrievedChunk
 
 
 def _apply_filters(stmt, filters: MetadataFilter | None):
+    """Attach optional document metadata predicates to a joined Chunk/Document query."""
     if not filters:
         return stmt
     if filters.domain:
@@ -22,6 +30,7 @@ def _apply_filters(stmt, filters: MetadataFilter | None):
 
 
 def _to_chunk(row, score: float, rank: int) -> RetrievedChunk:
+    """Map a SQLAlchemy ``(Chunk, Document, ...)`` row to the retrieval DTO."""
     chunk, document = row[0], row[1]
     return RetrievedChunk(
         chunk_id=chunk.id,
@@ -38,6 +47,8 @@ def _to_chunk(row, score: float, rank: int) -> RetrievedChunk:
 
 
 class PgVectorStore:
+    """Async pgvector + FTS store bound to a request-scoped SQLAlchemy session."""
+
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
@@ -47,6 +58,7 @@ class PgVectorStore:
         k: int,
         filters: MetadataFilter | None = None,
     ) -> list[RetrievedChunk]:
+        """Nearest-neighbor search by cosine distance; score = ``1 - distance``."""
         distance = Chunk.embedding.cosine_distance(query_embedding).label("distance")
         stmt: Select = (
             select(Chunk, Document, distance)
@@ -70,6 +82,7 @@ class PgVectorStore:
         k: int,
         filters: MetadataFilter | None = None,
     ) -> list[RetrievedChunk]:
+        """Full-text search via ``plainto_tsquery`` ranked by ``ts_rank_cd``."""
         tsq = func.plainto_tsquery("english", query)
         rank_expr = func.ts_rank_cd(Chunk.tsv, tsq).label("rank_score")
         stmt: Select = (
@@ -88,6 +101,7 @@ class PgVectorStore:
         return out
 
     async def get_chunks(self, chunk_ids: list[str]) -> list[RetrievedChunk]:
+        """Fetch chunks by id (eval / citation backfill helpers)."""
         if not chunk_ids:
             return []
         stmt = select(Chunk, Document).join(Document, Chunk.document_id == Document.id).where(Chunk.id.in_(chunk_ids))

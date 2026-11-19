@@ -1,3 +1,10 @@
+"""Source loaders and sentence-aware chunking for ingestion.
+
+Converts files, URLs, arXiv ids, and pasted text into LlamaIndex documents,
+then splits them with :class:`SentenceSplitter` using ``CHUNK_SIZE`` /
+``CHUNK_OVERLAP`` from settings. Output dicts are ready for embedding + ORM insert.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -15,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 def _clean(text: str) -> str:
+    """Normalize whitespace and strip NUL bytes from extracted text."""
     text = text.replace("\x00", " ")
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
@@ -22,6 +30,7 @@ def _clean(text: str) -> str:
 
 
 def load_file(path: str | Path) -> list[LIDocument]:
+    """Load a local ``.md``/``.txt``/``.html``/``.pdf``/``.docx`` file."""
     path = Path(path)
     suffix = path.suffix.lower()
     extra: dict[str, Any] = {"filename": path.name, "url": None}
@@ -48,6 +57,7 @@ def load_file(path: str | Path) -> list[LIDocument]:
 
 
 def load_url(url: str) -> list[LIDocument]:
+    """Fetch and extract main article text via trafilatura."""
     import trafilatura
 
     downloaded = trafilatura.fetch_url(url)
@@ -65,6 +75,7 @@ def load_url(url: str) -> list[LIDocument]:
 
 
 def load_arxiv(arxiv_id: str) -> list[LIDocument]:
+    """Load an arXiv paper abstract (and metadata) by id."""
     import arxiv
 
     client = arxiv.Client()
@@ -89,10 +100,12 @@ def load_arxiv(arxiv_id: str) -> list[LIDocument]:
 
 
 def load_markdown_text(text: str, title: str = "Pasted note") -> list[LIDocument]:
+    """Wrap pasted text as a single markdown document."""
     return [LIDocument(text=_clean(text), metadata={"title": title, "source": "markdown", "url": None})]
 
 
 def chunk_documents(docs: list[LIDocument]) -> list[dict[str, Any]]:
+    """Split documents into sentence-aware chunks with normalized metadata."""
     settings = get_settings()
     splitter = SentenceSplitter(chunk_size=settings.chunk_size, chunk_overlap=settings.chunk_overlap)
     nodes = splitter.get_nodes_from_documents(docs)

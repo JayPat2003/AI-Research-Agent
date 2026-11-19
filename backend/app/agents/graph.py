@@ -1,3 +1,21 @@
+"""LangGraph multi-agent orchestration for research queries.
+
+Pipeline (linear with a critic retry loop)::
+
+    memory → router → retrieve → research → data → draft → critic
+                                                         ↓ (fail, retries left)
+                                                      retrieve …
+                                                         ↓ (pass / max retries)
+                                                      finalize → END
+
+Each node emits SSE-friendly ``events`` that the API streams to the client.
+Observability spans wrap every node so local JSONL / Langfuse capture latency
+and routing decisions.
+
+``ResearchGraph.stream`` is the primary entry used by ``POST /query``;
+``ainvoke`` collects the final payload for the evaluation harness.
+"""
+
 from __future__ import annotations
 
 import json
@@ -19,6 +37,7 @@ from app.memory.store import (
     persist_message,
     refresh_summary,
 )
+from app.observability.tracing import get_or_create_trace, set_current_trace, span
 from app.retrieval.interface import RetrievedChunk
 from app.retrieval.service import RetrievalService
 from app.tools.sql import SCHEMA_HINT, run_select
@@ -28,10 +47,18 @@ logger = logging.getLogger(__name__)
 
 
 def _extend(a: list, b: list) -> list:
+    """LangGraph reducer: concatenate event lists across node updates."""
     return (a or []) + (b or [])
 
 
 class AgentState(TypedDict, total=False):
+    """Shared graph state passed between LangGraph nodes.
+
+    Fields are optional (``total=False``) so nodes may return partial updates.
+    ``events`` uses an append reducer so every node can contribute SSE payloads
+    without clobbering prior messages.
+    """
+
     query: str
     conversation_id: str
     user_id: str
@@ -53,6 +80,7 @@ class AgentState(TypedDict, total=False):
 
 
 def chunk_to_dict(chunk: RetrievedChunk) -> dict[str, Any]:
+    """Serialize a retrieval hit for graph state and SSE payloads."""
     return {
         "chunk_id": chunk.chunk_id,
         "document_id": chunk.document_id,
@@ -67,6 +95,7 @@ def chunk_to_dict(chunk: RetrievedChunk) -> dict[str, Any]:
 
 
 def _format_chunks(chunks: list[dict[str, Any]]) -> str:
+    """Render KB chunks as numbered blocks for draft/critic prompts."""
     blocks = []
     for i, ch in enumerate(chunks, start=1):
         label = f"[{i}] {ch['title']} (chunk {ch['chunk_id'][:8]}, source={ch['source']})"
@@ -75,6 +104,7 @@ def _format_chunks(chunks: list[dict[str, Any]]) -> str:
 
 
 def _format_web(items: list[dict[str, Any]]) -> str:
+    """Render live paper/search hits for draft/critic prompts."""
     if not items:
         return "(no web results)"
     lines = []
@@ -86,6 +116,12 @@ def _format_web(items: list[dict[str, Any]]) -> str:
 
 
 class ResearchGraph:
+    """Compiled LangGraph agent bound to one async DB session per request.
+
+    Instantiated per ``POST /query`` so retrieval and Text-to-SQL share the
+    same transactional session as memory persistence.
+    """
+
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
         self.retriever = RetrievalService(session)
@@ -93,131 +129,164 @@ class ResearchGraph:
         self.graph = self._compile()
 
     def _evt(self, etype: str, message: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Build a uniform SSE event envelope."""
         return {"type": etype, "message": message, "data": data or {}}
 
     async def _node_memory(self, state: AgentState) -> dict[str, Any]:
-        conv = await ensure_conversation(self.session, state.get("conversation_id"), state["user_id"])
-        bundle = await load_memory_bundle(self.session, conv.id, state["user_id"])
-        return {
-            "conversation_id": conv.id,
-            "memory_text": format_memory_for_prompt(bundle),
-            "events": [self._evt("memory", "Loaded conversation memory", {"conversation_id": conv.id})],
-        }
+        """Load or create conversation; inject short/long-term memory into state."""
+        with span("node.memory"):
+            conv = await ensure_conversation(self.session, state.get("conversation_id"), state["user_id"])
+            bundle = await load_memory_bundle(self.session, conv.id, state["user_id"])
+            return {
+                "conversation_id": conv.id,
+                "memory_text": format_memory_for_prompt(bundle),
+                "events": [self._evt("memory", "Loaded conversation memory", {"conversation_id": conv.id})],
+            }
 
     async def _node_router(self, state: AgentState) -> dict[str, Any]:
-        user = (
-            f"Memory:\n{state.get('memory_text') or '(none)'}\n\n"
-            f"User question:\n{state['query']}"
-        )
-        decision = structured(RouteDecision, ROUTER_SYSTEM, user, role="fast")
-        assert isinstance(decision, RouteDecision)
-        return {
-            "intent": decision.intent,
-            "rewritten_query": decision.rewritten_query or state["query"],
-            "needs_retrieval": decision.needs_retrieval,
-            "needs_web": decision.needs_web,
-            "needs_sql": decision.needs_sql,
-            "events": [
-                self._evt(
-                    "route",
-                    f"Routed as {decision.intent}",
-                    decision.model_dump(),
-                )
-            ],
-        }
+        """Classify intent and decide which specialist tools must run."""
+        with span("node.router") as sp:
+            user = (
+                f"Memory:\n{state.get('memory_text') or '(none)'}\n\n"
+                f"User question:\n{state['query']}"
+            )
+            decision = structured(RouteDecision, ROUTER_SYSTEM, user, role="fast")
+            assert isinstance(decision, RouteDecision)
+            sp.attrs.update(
+                {
+                    "intent": decision.intent,
+                    "needs_retrieval": decision.needs_retrieval,
+                    "needs_web": decision.needs_web,
+                    "needs_sql": decision.needs_sql,
+                }
+            )
+            return {
+                "intent": decision.intent,
+                "rewritten_query": decision.rewritten_query or state["query"],
+                "needs_retrieval": decision.needs_retrieval,
+                "needs_web": decision.needs_web,
+                "needs_sql": decision.needs_sql,
+                "events": [
+                    self._evt(
+                        "route",
+                        f"Routed as {decision.intent}",
+                        decision.model_dump(),
+                    )
+                ],
+            }
 
     async def _node_retrieve(self, state: AgentState) -> dict[str, Any]:
-        if not state.get("needs_retrieval") and not state.get("extra_queries"):
-            return {
-                "chunks": state.get("chunks") or [],
-                "events": [self._evt("retrieve", "Skipped private KB retrieval")],
+        """Hybrid KB search; force ``needs_web`` when private corpus is off-topic."""
+        with span("node.retrieve") as sp:
+            if not state.get("needs_retrieval") and not state.get("extra_queries"):
+                sp.attrs["skipped"] = True
+                return {
+                    "chunks": state.get("chunks") or [],
+                    "events": [self._evt("retrieve", "Skipped private KB retrieval")],
+                }
+            query = state.get("rewritten_query") or state["query"]
+            queries = [query, *(state.get("extra_queries") or [])]
+            seen: dict[str, dict[str, Any]] = {c["chunk_id"]: c for c in (state.get("chunks") or [])}
+            for q in queries:
+                found = await self.retriever.hybrid_search(q, variant="hybrid_rerank")
+                for chunk in found:
+                    seen[chunk.chunk_id] = chunk_to_dict(chunk)
+            chunks = list(seen.values())
+            # Off-topic seed hits (e.g. GLP-1 corpus for an MI question) → empty KB + force papers.
+            weak_kb = len(chunks) == 0
+            top_score = max((float(c.get("score") or 0.0) for c in chunks), default=-999.0)
+            if chunks and top_score < self.settings.retrieval_min_score:
+                chunks = []
+                weak_kb = True
+            sp.attrs.update({"n_chunks": len(chunks), "weak_kb": weak_kb, "top_score": top_score if chunks else None})
+            out: dict[str, Any] = {
+                "chunks": chunks,
+                "extra_queries": [],
+                "events": [
+                    self._evt(
+                        "retrieve",
+                        (
+                            f"Retrieved {len(chunks)} on-topic chunks"
+                            if not weak_kb
+                            else "Private KB had no on-topic chunks — will lean on Google Scholar / papers"
+                        ),
+                        {"n": len(chunks), "weak_kb": weak_kb, "top_score": top_score if chunks else None},
+                    )
+                ],
             }
-        query = state.get("rewritten_query") or state["query"]
-        queries = [query, *(state.get("extra_queries") or [])]
-        seen: dict[str, dict[str, Any]] = {c["chunk_id"]: c for c in (state.get("chunks") or [])}
-        for q in queries:
-            found = await self.retriever.hybrid_search(q, variant="hybrid_rerank")
-            for chunk in found:
-                seen[chunk.chunk_id] = chunk_to_dict(chunk)
-        chunks = list(seen.values())
-        # Off-topic seed hits (e.g. GLP-1 corpus for an MI question) → empty KB + force papers.
-        weak_kb = len(chunks) == 0
-        top_score = max((float(c.get("score") or 0.0) for c in chunks), default=-999.0)
-        if chunks and top_score < self.settings.retrieval_min_score:
-            chunks = []
-            weak_kb = True
-        out: dict[str, Any] = {
-            "chunks": chunks,
-            "extra_queries": [],
-            "events": [
-                self._evt(
-                    "retrieve",
-                    (
-                        f"Retrieved {len(chunks)} on-topic chunks"
-                        if not weak_kb
-                        else "Private KB had no on-topic chunks — will lean on Google Scholar / papers"
-                    ),
-                    {"n": len(chunks), "weak_kb": weak_kb, "top_score": top_score if chunks else None},
-                )
-            ],
-        }
-        if weak_kb:
-            out["needs_web"] = True
-        return out
+            if weak_kb:
+                out["needs_web"] = True
+            return out
 
     async def _node_research(self, state: AgentState) -> dict[str, Any]:
-        if not state.get("needs_web"):
+        """Live literature search (Google Scholar, arXiv, Semantic Scholar)."""
+        with span("node.research") as sp:
+            if not state.get("needs_web"):
+                sp.attrs["skipped"] = True
+                return {
+                    "web_results": state.get("web_results") or [],
+                    "events": [self._evt("research", "Skipped live paper search")],
+                }
+            query = state.get("rewritten_query") or state["query"]
+            # Prefer Google Scholar; keep arXiv + Semantic Scholar as academic backups.
+            gscholar = search_google_scholar(query, max_results=6)
+            papers = search_arxiv(query, max_results=4)
+            semantic = search_semantic_scholar(
+                query, max_results=4, api_key=self.settings.semantic_scholar_api_key or None
+            )
+            combined = gscholar + papers + semantic
+            sp.attrs.update(
+                {
+                    "n_gscholar": len(gscholar),
+                    "n_arxiv": len(papers),
+                    "n_semantic": len(semantic),
+                    "n": len(combined),
+                }
+            )
             return {
-                "web_results": state.get("web_results") or [],
-                "events": [self._evt("research", "Skipped live paper search")],
+                "web_results": combined,
+                "events": [
+                    self._evt(
+                        "research",
+                        (
+                            f"Found {len(gscholar)} Google Scholar, {len(papers)} arXiv, "
+                            f"{len(semantic)} Semantic Scholar results"
+                        ),
+                        {"n": len(combined)},
+                    )
+                ],
             }
-        query = state.get("rewritten_query") or state["query"]
-        # Prefer Google Scholar; keep arXiv + Semantic Scholar as academic backups.
-        gscholar = search_google_scholar(query, max_results=6)
-        papers = search_arxiv(query, max_results=4)
-        semantic = search_semantic_scholar(
-            query, max_results=4, api_key=self.settings.semantic_scholar_api_key or None
-        )
-        combined = gscholar + papers + semantic
-        return {
-            "web_results": combined,
-            "events": [
-                self._evt(
-                    "research",
-                    (
-                        f"Found {len(gscholar)} Google Scholar, {len(papers)} arXiv, "
-                        f"{len(semantic)} Semantic Scholar results"
-                    ),
-                    {"n": len(combined)},
-                )
-            ],
-        }
 
     async def _node_data(self, state: AgentState) -> dict[str, Any]:
-        if not state.get("needs_sql"):
-            return {"sql_result": {}, "events": [self._evt("data", "Skipped Text-to-SQL")]}
-        query = state.get("rewritten_query") or state["query"]
-        decision = structured(
-            SQLDecision,
-            SQL_SYSTEM,
-            f"{SCHEMA_HINT}\n\nUser question:\n{query}",
-            role="fast",
-        )
-        assert isinstance(decision, SQLDecision)
-        result = await run_select(self.session, decision.sql)
-        result["explanation"] = decision.explanation
-        return {
-            "sql_result": result,
-            "events": [
-                self._evt(
-                    "data",
-                    f"SQL {'ok' if result.get('ok') else 'failed'} — {result.get('n', 0)} rows",
-                    {"sql": result.get("sql"), "ok": result.get("ok")},
-                )
-            ],
-        }
+        """Text-to-SQL over the local clinical_trials catalog when routed."""
+        with span("node.data") as sp:
+            if not state.get("needs_sql"):
+                sp.attrs["skipped"] = True
+                return {"sql_result": {}, "events": [self._evt("data", "Skipped Text-to-SQL")]}
+            query = state.get("rewritten_query") or state["query"]
+            decision = structured(
+                SQLDecision,
+                SQL_SYSTEM,
+                f"{SCHEMA_HINT}\n\nUser question:\n{query}",
+                role="fast",
+            )
+            assert isinstance(decision, SQLDecision)
+            result = await run_select(self.session, decision.sql)
+            result["explanation"] = decision.explanation
+            sp.attrs.update({"ok": result.get("ok"), "n": result.get("n", 0)})
+            return {
+                "sql_result": result,
+                "events": [
+                    self._evt(
+                        "data",
+                        f"SQL {'ok' if result.get('ok') else 'failed'} — {result.get('n', 0)} rows",
+                        {"sql": result.get("sql"), "ok": result.get("ok")},
+                    )
+                ],
+            }
 
     def _report_user_prompt(self, state: AgentState) -> str:
+        """Assemble the draft-agent user message from memory + evidence packs."""
         sql = state.get("sql_result") or {}
         return (
             f"Conversation memory:\n{state.get('memory_text') or '(none)'}\n\n"
@@ -230,71 +299,78 @@ class ResearchGraph:
         )
 
     async def _node_draft(self, state: AgentState) -> dict[str, Any]:
-        report = structured(CitedReport, DRAFT_SYSTEM, self._report_user_prompt(state), role="research")
-        assert isinstance(report, CitedReport)
-        # Attach known chunk ids when the model omitted them but cited titles
-        by_title = {c["title"].lower(): c for c in (state.get("chunks") or [])}
-        for cit in report.citations:
-            if not cit.chunk_id and cit.title:
-                match = by_title.get(cit.title.lower())
-                if match:
-                    cit.chunk_id = match["chunk_id"]
-                    cit.url = cit.url or match.get("url")
-                    cit.source = cit.source or match.get("source") or ""
-        markdown = (
-            f"# {report.title}\n\n"
-            f"{report.executive_summary}\n\n"
-            f"{report.body_markdown}\n\n"
-            f"## Recommendation\n{report.recommendation}\n"
-        )
-        if report.limitations:
-            markdown += "\n## Limitations\n" + "\n".join(f"- {x}" for x in report.limitations) + "\n"
-        if report.citations:
-            markdown += "\n## Sources\n"
-            for i, cit in enumerate(report.citations, start=1):
-                loc = cit.url or (f"chunk:{cit.chunk_id}" if cit.chunk_id else "")
-                markdown += f"[{i}] {cit.title} {loc}\n"
-        return {
-            "report": report.model_dump(),
-            "draft_markdown": markdown,
-            "events": [self._evt("draft", "Drafted cited report", {"title": report.title})],
-        }
+        """Synthesize a cited decision briefing from all evidence channels."""
+        with span("node.draft") as sp:
+            report = structured(CitedReport, DRAFT_SYSTEM, self._report_user_prompt(state), role="research")
+            assert isinstance(report, CitedReport)
+            # Attach known chunk ids when the model omitted them but cited titles
+            by_title = {c["title"].lower(): c for c in (state.get("chunks") or [])}
+            for cit in report.citations:
+                if not cit.chunk_id and cit.title:
+                    match = by_title.get(cit.title.lower())
+                    if match:
+                        cit.chunk_id = match["chunk_id"]
+                        cit.url = cit.url or match.get("url")
+                        cit.source = cit.source or match.get("source") or ""
+            markdown = (
+                f"# {report.title}\n\n"
+                f"{report.executive_summary}\n\n"
+                f"{report.body_markdown}\n\n"
+                f"## Recommendation\n{report.recommendation}\n"
+            )
+            if report.limitations:
+                markdown += "\n## Limitations\n" + "\n".join(f"- {x}" for x in report.limitations) + "\n"
+            if report.citations:
+                markdown += "\n## Sources\n"
+                for i, cit in enumerate(report.citations, start=1):
+                    loc = cit.url or (f"chunk:{cit.chunk_id}" if cit.chunk_id else "")
+                    markdown += f"[{i}] {cit.title} {loc}\n"
+            sp.attrs.update({"title": report.title, "n_citations": len(report.citations)})
+            return {
+                "report": report.model_dump(),
+                "draft_markdown": markdown,
+                "events": [self._evt("draft", "Drafted cited report", {"title": report.title})],
+            }
 
     async def _node_critic(self, state: AgentState) -> dict[str, Any]:
-        payload = (
-            f"Question:\n{state['query']}\n\n"
-            f"Draft:\n{state.get('draft_markdown')}\n\n"
-            f"Available chunk ids: {[c['chunk_id'] for c in (state.get('chunks') or [])]}\n\n"
-            f"Retrieved evidence:\n{_format_chunks(state.get('chunks') or [])}\n\n"
-            f"Web evidence:\n{_format_web(state.get('web_results') or [])}"
-        )
-        verdict = structured(CriticVerdict, CRITIC_SYSTEM, payload, role="research")
-        assert isinstance(verdict, CriticVerdict)
-        retries = int(state.get("retries") or 0)
-        passed = verdict.pass_check
-        if not passed:
-            retries += 1
-        extra = []
-        if not passed:
-            extra = verdict.missing_queries or [state.get("rewritten_query") or state["query"]]
-        return {
-            "critic": verdict.model_dump(),
-            "retries": retries,
-            "extra_queries": extra,
-            "needs_retrieval": True if not passed else state.get("needs_retrieval", True),
-            # On critic fail, re-query Google Scholar / papers — do not disable live search.
-            "needs_web": True if not passed else state.get("needs_web", False),
-            "needs_sql": False if not passed else state.get("needs_sql", False),
-            "events": [
-                self._evt(
-                    "critic",
-                    "PASS" if passed else f"FAIL — {'; '.join(verdict.issues) or 'needs more evidence'}",
-                    verdict.model_dump(),
-                )
-            ],
-        }
+        """Verify claims against evidence; queue re-retrieval on failure."""
+        with span("node.critic") as sp:
+            payload = (
+                f"Question:\n{state['query']}\n\n"
+                f"Draft:\n{state.get('draft_markdown')}\n\n"
+                f"Available chunk ids: {[c['chunk_id'] for c in (state.get('chunks') or [])]}\n\n"
+                f"Retrieved evidence:\n{_format_chunks(state.get('chunks') or [])}\n\n"
+                f"Web evidence:\n{_format_web(state.get('web_results') or [])}"
+            )
+            verdict = structured(CriticVerdict, CRITIC_SYSTEM, payload, role="research")
+            assert isinstance(verdict, CriticVerdict)
+            retries = int(state.get("retries") or 0)
+            passed = verdict.pass_check
+            if not passed:
+                retries += 1
+            extra = []
+            if not passed:
+                extra = verdict.missing_queries or [state.get("rewritten_query") or state["query"]]
+            sp.attrs.update({"pass_check": passed, "retries": retries})
+            return {
+                "critic": verdict.model_dump(),
+                "retries": retries,
+                "extra_queries": extra,
+                "needs_retrieval": True if not passed else state.get("needs_retrieval", True),
+                # On critic fail, re-query Google Scholar / papers — do not disable live search.
+                "needs_web": True if not passed else state.get("needs_web", False),
+                "needs_sql": False if not passed else state.get("needs_sql", False),
+                "events": [
+                    self._evt(
+                        "critic",
+                        "PASS" if passed else f"FAIL — {'; '.join(verdict.issues) or 'needs more evidence'}",
+                        verdict.model_dump(),
+                    )
+                ],
+            }
 
     def _route_after_critic(self, state: AgentState) -> Literal["retrieve", "finalize"]:
+        """Conditional edge: re-retrieve while under max critic retries."""
         critic = state.get("critic") or {}
         retries = int(state.get("retries") or 0)
         if critic.get("pass_check"):
@@ -304,36 +380,52 @@ class ResearchGraph:
         return "retrieve"
 
     async def _node_finalize(self, state: AgentState) -> dict[str, Any]:
-        conv_id = state["conversation_id"]
-        report = state.get("report") or {}
-        markdown = state.get("draft_markdown") or ""
-        citations = report.get("citations") or []
-        await append_turn(conv_id, "user", state["query"])
-        await append_turn(conv_id, "assistant", markdown)
-        await persist_message(self.session, conv_id, "user", state["query"])
-        await persist_message(self.session, conv_id, "assistant", markdown, citations=citations, extra={"critic": state.get("critic")})
-        bundle = await load_memory_bundle(self.session, conv_id, state["user_id"])
-        await refresh_summary(self.session, conv_id, bundle, state["query"], markdown)
-        await self.session.commit()
-        return {
-            "events": [
-                self._evt(
-                    "final",
-                    "Report ready",
-                    {
-                        "conversation_id": conv_id,
-                        "report": report,
-                        "markdown": markdown,
-                        "chunks": state.get("chunks") or [],
-                        "web_results": state.get("web_results") or [],
-                        "sql_result": state.get("sql_result") or {},
-                        "critic": state.get("critic") or {},
-                    },
-                )
-            ]
-        }
+        """Persist turns, refresh summary, emit the final SSE payload."""
+        with span("node.finalize") as sp:
+            conv_id = state["conversation_id"]
+            report = state.get("report") or {}
+            markdown = state.get("draft_markdown") or ""
+            citations = report.get("citations") or []
+            await append_turn(conv_id, "user", state["query"])
+            await append_turn(conv_id, "assistant", markdown)
+            await persist_message(self.session, conv_id, "user", state["query"])
+            await persist_message(
+                self.session,
+                conv_id,
+                "assistant",
+                markdown,
+                citations=citations,
+                extra={"critic": state.get("critic")},
+            )
+            bundle = await load_memory_bundle(self.session, conv_id, state["user_id"])
+            await refresh_summary(self.session, conv_id, bundle, state["query"], markdown)
+            await self.session.commit()
+            sp.attrs["conversation_id"] = conv_id
+            return {
+                "events": [
+                    self._evt(
+                        "final",
+                        "Report ready",
+                        {
+                            "conversation_id": conv_id,
+                            "report": report,
+                            "markdown": markdown,
+                            "chunks": state.get("chunks") or [],
+                            "web_results": state.get("web_results") or [],
+                            "sql_result": state.get("sql_result") or {},
+                            "critic": state.get("critic") or {},
+                            "retries": int(state.get("retries") or 0),
+                            "intent": state.get("intent"),
+                            "needs_retrieval": state.get("needs_retrieval"),
+                            "needs_web": state.get("needs_web"),
+                            "needs_sql": state.get("needs_sql"),
+                        },
+                    )
+                ]
+            }
 
     def _compile(self):
+        """Wire node topology and compile a runnable LangGraph."""
         graph = StateGraph(AgentState)
         graph.add_node("memory", self._node_memory)
         graph.add_node("router", self._node_router)
@@ -355,6 +447,9 @@ class ResearchGraph:
         return graph.compile()
 
     async def stream(self, query: str, conversation_id: str | None, user_id: str) -> AsyncIterator[dict[str, Any]]:
+        """Yield node events as they complete; attach trace summary on ``final``."""
+        trace = get_or_create_trace(query=query)
+        set_current_trace(trace)
         initial: AgentState = {
             "query": query,
             "conversation_id": conversation_id or "",
@@ -365,7 +460,44 @@ class ResearchGraph:
             "extra_queries": [],
             "events": [],
         }
-        async for update in self.graph.astream(initial, stream_mode="updates"):
-            for _node, payload in update.items():
-                for event in payload.get("events") or []:
-                    yield event
+        try:
+            async for update in self.graph.astream(initial, stream_mode="updates"):
+                for _node, payload in update.items():
+                    for event in payload.get("events") or []:
+                        if event.get("type") == "final":
+                            summary = trace.summary()
+                            path = trace.flush()
+                            data = event.setdefault("data", {})
+                            data["trace"] = {
+                                **summary,
+                                "trace_path": str(path) if path else None,
+                            }
+                        yield event
+        finally:
+            if not any(s.name == "flush_done" for s in trace.spans):
+                # Ensure flush even if finalize did not emit (error mid-run)
+                try:
+                    trace.flush()
+                except Exception:  # noqa: BLE001
+                    logger.exception("trace flush failed")
+            set_current_trace(None)
+
+    async def ainvoke(self, query: str, conversation_id: str | None, user_id: str) -> dict[str, Any]:
+        """Run the graph to completion and return the final event payload (for eval)."""
+        final: dict[str, Any] = {}
+        route: dict[str, Any] = {}
+        async for event in self.stream(query, conversation_id, user_id):
+            if event.get("type") == "route":
+                route = event.get("data") or {}
+            if event.get("type") == "final":
+                final = event.get("data") or {}
+        # Prefer explicit route event; fall back to flags on final payload.
+        if not route:
+            route = {
+                "intent": final.get("intent"),
+                "needs_retrieval": final.get("needs_retrieval"),
+                "needs_web": final.get("needs_web"),
+                "needs_sql": final.get("needs_sql"),
+            }
+        final["route"] = route
+        return final

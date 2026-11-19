@@ -1,17 +1,6 @@
-from app.memory.store import (
-    append_turn,
-    ensure_conversation,
-    format_memory_for_prompt,
-    load_memory_bundle,
-    persist_message,
-    refresh_summary,
-)
+"""Conversation memory: short-term Redis turns + long-term Postgres summaries.
 
-__all__ = [
-    "append_turn",
-    "ensure_conversation",
-    "format_memory_for_prompt",
-    "load_memory_bundle",
-    "persist_message",
-    "refresh_summary",
-]
+Follow-up questions (e.g. \"what about kidney outcomes?\") are resolved against
+a compressed conversation summary and a bounded window of recent turns, not a
+raw transcript dump.
+"""

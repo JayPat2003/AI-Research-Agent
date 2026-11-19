@@ -1,21 +1,5 @@
-from app.db.models import (
-    Base,
-    Chunk,
-    ClinicalTrial,
-    Conversation,
-    Document,
-    IngestJob,
-    Message,
-    UserPreference,
-)
+"""Persistence layer (SQLAlchemy + Postgres/pgvector).
 
-__all__ = [
-    "Base",
-    "Chunk",
-    "ClinicalTrial",
-    "Conversation",
-    "Document",
-    "IngestJob",
-    "Message",
-    "UserPreference",
-]
+Owns ORM models, async/sync engines, schema initialization, and the seeded
+``clinical_trials`` demo catalog used by the Text-to-SQL tool.
+"""

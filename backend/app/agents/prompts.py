@@ -1,3 +1,11 @@
+"""System prompts for LangGraph specialist agents.
+
+These strings are the behavioral contracts for the router, draft, critic, and
+SQL nodes. They intentionally encode product constraints (narrow seed corpus,
+no prescriptive medical advice, prefer live papers when KB is weak) so model
+behavior stays aligned without scattering rules across Python code.
+"""
+
 ROUTER_SYSTEM = """You are the router for a general research & decision intelligence platform.
 Classify the user question and decide which specialists must run.
 Subject matter is whatever the user asks — healthcare, policy, engineering, or otherwise.

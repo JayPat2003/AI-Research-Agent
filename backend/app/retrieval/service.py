@@ -1,3 +1,13 @@
+"""Hybrid retrieval orchestration over the private knowledge base.
+
+Combines dense (embedding) and sparse (Postgres FTS) retrieval with optional
+Reciprocal Rank Fusion and BGE cross-encoder reranking. Ablation variants
+(``naive`` / ``hybrid`` / ``hybrid_rerank``) power the evaluation suite.
+
+Topical-overlap filtering drops vaguely medical but off-topic seed hits so a
+narrow GLP-1/SGLT2 corpus does not pollute answers about unrelated conditions.
+"""
+
 from __future__ import annotations
 
 import re
@@ -7,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.llm.embeddings import get_embedder, get_reranker
+from app.observability.tracing import span
 from app.retrieval.fusion import reciprocal_rank_fusion
 from app.retrieval.interface import MetadataFilter, RetrievedChunk
 from app.retrieval.pgvector_store import PgVectorStore
@@ -69,10 +80,12 @@ _WEAK_TOPIC = {
 
 
 def _tokens(text: str) -> set[str]:
+    """Tokenize for overlap scoring: lowercased alphanumerics, stopwords removed."""
     return {t for t in re.findall(r"[a-z0-9]+", text.lower()) if len(t) > 2 and t not in _STOP}
 
 
 def _topical_overlap(query: str, chunk: RetrievedChunk) -> float:
+    """Fraction of distinctive query tokens present in the chunk title/body."""
     q = _tokens(query)
     if not q:
         return 1.0
@@ -85,6 +98,8 @@ def _topical_overlap(query: str, chunk: RetrievedChunk) -> float:
 
 
 class RetrievalService:
+    """High-level search API used by the retrieve graph node and eval runner."""
+
     def __init__(self, session: AsyncSession) -> None:
         self.store = PgVectorStore(session)
         self.settings = get_settings()
@@ -92,6 +107,7 @@ class RetrievalService:
     async def semantic_search(
         self, query: str, k: int | None = None, filters: MetadataFilter | None = None
     ) -> list[RetrievedChunk]:
+        """Dense vector similarity search only."""
         k = k or self.settings.dense_k
         embedding = get_embedder().embed_query(query)
         return await self.store.dense_search(embedding, k, filters)
@@ -99,6 +115,7 @@ class RetrievalService:
     async def keyword_search(
         self, query: str, k: int | None = None, filters: MetadataFilter | None = None
     ) -> list[RetrievedChunk]:
+        """Postgres full-text search only."""
         k = k or self.settings.sparse_k
         return await self.store.sparse_search(query, k, filters)
 
@@ -110,20 +127,28 @@ class RetrievalService:
         filters: MetadataFilter | None = None,
         k: int | None = None,
     ) -> list[RetrievedChunk]:
-        dense_k = self.settings.dense_k
-        sparse_k = self.settings.sparse_k
-        final_k = k or self.settings.rerank_k
+        """Run the configured retrieval ablation variant and return top-k chunks."""
+        with span("tool.retrieval", variant=variant) as sp:
+            dense_k = self.settings.dense_k
+            sparse_k = self.settings.sparse_k
+            final_k = k or self.settings.rerank_k
 
-        dense = await self.semantic_search(query, dense_k, filters)
-        if variant == "naive":
-            return self._keep_on_topic(query, dense[:final_k])
+            dense = await self.semantic_search(query, dense_k, filters)
+            if variant == "naive":
+                out = self._keep_on_topic(query, dense[:final_k])
+                sp.attrs.update({"n_chunks": len(out), "top_score": out[0].score if out else None})
+                return out
 
-        sparse = await self.keyword_search(query, sparse_k, filters)
-        fused = reciprocal_rank_fusion([dense, sparse])
-        if variant == "hybrid":
-            return self._keep_on_topic(query, fused[:final_k])
+            sparse = await self.keyword_search(query, sparse_k, filters)
+            fused = reciprocal_rank_fusion([dense, sparse])
+            if variant == "hybrid":
+                out = self._keep_on_topic(query, fused[:final_k])
+                sp.attrs.update({"n_chunks": len(out), "top_score": out[0].score if out else None})
+                return out
 
-        return self.rerank(query, fused, final_k)
+            out = self.rerank(query, fused, final_k)
+            sp.attrs.update({"n_chunks": len(out), "top_score": out[0].score if out else None})
+            return out
 
     def _keep_on_topic(self, query: str, chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
         """Drop off-topic seed hits that only match the medical domain vaguely."""
@@ -154,6 +179,7 @@ class RetrievalService:
         ]
 
     def rerank(self, query: str, chunks: list[RetrievedChunk], k: int | None = None) -> list[RetrievedChunk]:
+        """Cross-encoder rerank fused candidates; apply score floor + topical filter."""
         k = k or self.settings.rerank_k
         if not chunks:
             return []

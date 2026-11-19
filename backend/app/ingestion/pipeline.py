@@ -1,3 +1,10 @@
+"""Document ingestion pipeline: load → chunk → embed → persist.
+
+Used by the Redis worker for async jobs and by API/worker startup for seeding
+``SEED_DIR``. Sync SQLAlchemy sessions are intentional here so embedding model
+loads do not block the FastAPI event loop (worker is a separate process).
+"""
+
 from __future__ import annotations
 
 import json
@@ -18,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 def _as_documents(payload: dict[str, Any]):
+    """Dispatch a job payload to the appropriate loader."""
     source_type = payload["source_type"]
     source = payload["source"]
     if source_type == "file":
@@ -32,7 +40,11 @@ def _as_documents(payload: dict[str, Any]):
 
 
 def ingest_payload(payload: dict[str, Any], session: Session | None = None) -> str:
-    """Synchronous ingestion used by the worker and seed script."""
+    """Synchronous ingestion used by the worker and seed script.
+
+    Returns the new ``Document.id``. Updates ``IngestJob`` status when ``job_id``
+    is present on the payload.
+    """
     close = False
     if session is None:
         init_db_sync()
@@ -107,10 +119,12 @@ def ingest_payload(payload: dict[str, Any], session: Session | None = None) -> s
 
 
 async def enqueue_job(redis_client, payload: dict[str, Any]) -> None:
+    """Push a JSON ingest job onto the configured Redis list."""
     await redis_client.rpush(get_settings().ingest_queue, json.dumps(payload))
 
 
 def seed_directory(seed_dir: str | Path | None = None) -> list[str]:
+    """Ingest files from ``SEED_DIR`` that are not already present by title stem."""
     settings = get_settings()
     root = Path(seed_dir or settings.seed_dir)
     if not root.exists():

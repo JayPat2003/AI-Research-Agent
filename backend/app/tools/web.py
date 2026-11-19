@@ -1,3 +1,11 @@
+"""Live literature / web search tools for the research agent node.
+
+Primary: Google Scholar HTML scrape (no API key). Fallbacks: optional
+``scholarly`` package, arXiv API, Semantic Scholar Graph API. All failures are
+logged and return empty lists so the draft agent can still answer from KB/SQL
+evidence rather than crashing the graph.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -7,6 +15,8 @@ from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
+
+from app.observability.tracing import span
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +31,7 @@ _SCHOLAR_HEADERS = {
 
 
 def _clean_scholar_url(href: str | None) -> str:
+    """Resolve Scholar redirect wrappers to the underlying paper URL."""
     if not href:
         return ""
     if href.startswith("/"):
@@ -34,6 +45,7 @@ def _clean_scholar_url(href: str | None) -> str:
 
 
 def _parse_scholar_html(html: str, max_results: int) -> list[dict[str, Any]]:
+    """Extract title/url/snippet/meta from a Google Scholar results page."""
     soup = BeautifulSoup(html, "html.parser")
     results: list[dict[str, Any]] = []
     for block in soup.select("div.gs_r.gs_or.gs_scl"):
@@ -67,13 +79,16 @@ def _parse_scholar_html(html: str, max_results: int) -> list[dict[str, Any]]:
 
 def search_google_scholar(query: str, max_results: int = 5) -> list[dict[str, Any]]:
     """Search Google Scholar for academic papers. No API key required."""
-    results = _search_scholar_http(query, max_results)
-    if results:
+    with span("tool.google_scholar", max_results=max_results) as sp:
+        results = _search_scholar_http(query, max_results)
+        if not results:
+            results = _search_scholar_library(query, max_results)
+        sp.attrs["n"] = len(results)
         return results
-    return _search_scholar_library(query, max_results)
 
 
 def _search_scholar_http(query: str, max_results: int) -> list[dict[str, Any]]:
+    """Direct HTTP scrape of Scholar SERP HTML."""
     url = f"https://scholar.google.com/scholar?q={quote_plus(query)}&hl=en&as_sdt=0,5"
     try:
         with httpx.Client(follow_redirects=True, timeout=25.0, headers=_SCHOLAR_HEADERS) as client:
@@ -120,63 +135,72 @@ def _search_scholar_library(query: str, max_results: int) -> list[dict[str, Any]
 
 
 def search_arxiv(query: str, max_results: int = 5) -> list[dict[str, Any]]:
-    try:
-        import arxiv
+    """Search arXiv by relevance; returns title/url/abstract snippets."""
+    with span("tool.arxiv", max_results=max_results) as sp:
+        try:
+            import arxiv
 
-        client = arxiv.Client()
-        search = arxiv.Search(query=query, max_results=max_results, sort_by=arxiv.SortCriterion.Relevance)
-        papers = []
-        for paper in client.results(search):
-            papers.append(
-                {
-                    "title": paper.title,
-                    "url": paper.entry_id,
-                    "snippet": paper.summary.replace("\n", " ")[:800],
-                    "source": "arxiv",
-                    "authors": ", ".join(a.name for a in paper.authors[:6]),
-                    "published": str(paper.published.date()),
-                }
-            )
-        return papers
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("arXiv search failed: %s", exc)
-        return []
+            client = arxiv.Client()
+            search = arxiv.Search(query=query, max_results=max_results, sort_by=arxiv.SortCriterion.Relevance)
+            papers = []
+            for paper in client.results(search):
+                papers.append(
+                    {
+                        "title": paper.title,
+                        "url": paper.entry_id,
+                        "snippet": paper.summary.replace("\n", " ")[:800],
+                        "source": "arxiv",
+                        "authors": ", ".join(a.name for a in paper.authors[:6]),
+                        "published": str(paper.published.date()),
+                    }
+                )
+            sp.attrs["n"] = len(papers)
+            return papers
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("arXiv search failed: %s", exc)
+            sp.attrs["n"] = 0
+            return []
 
 
 def search_semantic_scholar(query: str, max_results: int = 5, api_key: str | None = None) -> list[dict[str, Any]]:
-    params = {
-        "query": query,
-        "limit": max_results,
-        "fields": "title,abstract,year,url,authors,externalIds",
-    }
-    headers = {"User-Agent": "ai-research-agent/0.1"}
-    if api_key:
-        headers["x-api-key"] = api_key
-    try:
-        resp = httpx.get(
-            "https://api.semanticscholar.org/graph/v1/paper/search",
-            params=params,
-            headers=headers,
-            timeout=20.0,
-        )
-        if resp.status_code >= 400:
-            logger.warning("Semantic Scholar HTTP %s", resp.status_code)
-            return []
-        data = resp.json()
-        results = []
-        for paper in data.get("data") or []:
-            authors = ", ".join(a.get("name", "") for a in (paper.get("authors") or [])[:6])
-            results.append(
-                {
-                    "title": paper.get("title") or "",
-                    "url": paper.get("url") or "",
-                    "snippet": (paper.get("abstract") or "")[:800],
-                    "source": "semantic_scholar",
-                    "authors": authors,
-                    "published": str(paper.get("year") or ""),
-                }
+    """Search Semantic Scholar Graph API (optional API key raises rate limits)."""
+    with span("tool.semantic_scholar", max_results=max_results) as sp:
+        params = {
+            "query": query,
+            "limit": max_results,
+            "fields": "title,abstract,year,url,authors,externalIds",
+        }
+        headers = {"User-Agent": "ai-research-agent/0.1"}
+        if api_key:
+            headers["x-api-key"] = api_key
+        try:
+            resp = httpx.get(
+                "https://api.semanticscholar.org/graph/v1/paper/search",
+                params=params,
+                headers=headers,
+                timeout=20.0,
             )
-        return results
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Semantic Scholar search failed: %s", exc)
-        return []
+            if resp.status_code >= 400:
+                logger.warning("Semantic Scholar HTTP %s", resp.status_code)
+                sp.attrs["n"] = 0
+                return []
+            data = resp.json()
+            results = []
+            for paper in data.get("data") or []:
+                authors = ", ".join(a.get("name", "") for a in (paper.get("authors") or [])[:6])
+                results.append(
+                    {
+                        "title": paper.get("title") or "",
+                        "url": paper.get("url") or "",
+                        "snippet": (paper.get("abstract") or "")[:800],
+                        "source": "semantic_scholar",
+                        "authors": authors,
+                        "published": str(paper.get("year") or ""),
+                    }
+                )
+            sp.attrs["n"] = len(results)
+            return results
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Semantic Scholar search failed: %s", exc)
+            sp.attrs["n"] = 0
+            return []

@@ -1,4 +1,6 @@
-from app.llm.embeddings import get_embedder, get_reranker
-from app.llm.models import complete, get_chat_model
+"""LLM and embedding factories.
 
-__all__ = ["get_chat_model", "complete", "get_embedder", "get_reranker"]
+Chat models are selected by ``LLM_PROVIDER`` (Gemini primary with optional
+Ollama fallback, or Ollama-only). Embeddings/reranking run locally via
+``fastembed`` (or deterministic ``hash`` vectors for tests / Free Tier demos).
+"""

@@ -1,3 +1,10 @@
+"""Seed the demo ``clinical_trials`` catalog for Text-to-SQL demos and eval.
+
+Rows are well-known public outcomes trials (GLP-1 / SGLT2 / related). This is
+intentionally a small static subset — not ClinicalTrials.gov — so SQL answers
+are deterministic for demos and automated evaluation.
+"""
+
 from __future__ import annotations
 
 from sqlalchemy import func, select
@@ -34,6 +41,7 @@ ROWS: list[dict] = [
 
 
 def seed_trials(session: Session) -> int:
+    """Insert catalog rows if the table is empty (sync). Returns rows inserted."""
     count = session.scalar(select(func.count()).select_from(ClinicalTrial)) or 0
     if count:
         return 0
@@ -44,6 +52,7 @@ def seed_trials(session: Session) -> int:
 
 
 async def seed_trials_async(session: AsyncSession) -> int:
+    """Insert catalog rows if the table is empty (async). Returns rows inserted."""
     count = await session.scalar(select(func.count()).select_from(ClinicalTrial)) or 0
     if count:
         return 0

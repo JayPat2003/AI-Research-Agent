@@ -1,8 +1,16 @@
+"""SQLAlchemy engine and session factories.
+
+Async engines power the FastAPI request path; sync engines power the ingestion
+worker and seed scripts. ``init_db`` / ``init_db_sync`` also enable the
+``vector`` extension and install the ``chunks.tsv`` maintenance trigger used by
+sparse (FTS) retrieval.
+"""
+
 from collections.abc import AsyncIterator
 
+from sqlalchemy import create_engine, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy import create_engine, text
 
 from app.config import get_settings
 from app.db.models import Base
@@ -17,11 +25,13 @@ SyncSessionLocal = sessionmaker(sync_engine, expire_on_commit=False, class_=Sess
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
+    """FastAPI dependency: yield a request-scoped async session."""
     async with SessionLocal() as session:
         yield session
 
 
 async def init_db() -> None:
+    """Create schema, pgvector extension, and FTS trigger (async path)."""
     async with engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all)
@@ -60,6 +70,7 @@ async def init_db() -> None:
 
 
 def init_db_sync() -> None:
+    """Create schema, pgvector extension, and FTS trigger (sync/worker path)."""
     with sync_engine.begin() as conn:
         conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         Base.metadata.create_all(conn)

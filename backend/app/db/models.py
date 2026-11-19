@@ -1,3 +1,10 @@
+"""SQLAlchemy ORM models for the research platform.
+
+Tables cover the private knowledge base (``documents`` / ``chunks`` with
+pgvector + FTS), conversation memory, user preferences, the demo
+``clinical_trials`` catalog for Text-to-SQL, and async ingest job tracking.
+"""
+
 from __future__ import annotations
 
 import uuid
@@ -22,7 +29,7 @@ from app.config import get_settings
 
 
 class Base(DeclarativeBase):
-    pass
+    """Declarative base for all ORM models."""
 
 
 def _uuid() -> str:
@@ -30,6 +37,8 @@ def _uuid() -> str:
 
 
 class Document(Base):
+    """Indexed knowledge-base document (one row per ingested source)."""
+
     __tablename__ = "documents"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
@@ -47,6 +56,8 @@ class Document(Base):
 
 
 class Chunk(Base):
+    """Embedded passage used by dense (vector) and sparse (FTS) retrieval."""
+
     __tablename__ = "chunks"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
@@ -73,6 +84,8 @@ class Chunk(Base):
 
 
 class Conversation(Base):
+    """Durable chat thread with an LLM-maintained rolling summary."""
+
     __tablename__ = "conversations"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
@@ -87,6 +100,8 @@ class Conversation(Base):
 
 
 class Message(Base):
+    """One user or assistant message within a conversation."""
+
     __tablename__ = "messages"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
@@ -103,6 +118,8 @@ class Message(Base):
 
 
 class UserPreference(Base):
+    """Per-user presentation / domain preferences."""
+
     __tablename__ = "user_preferences"
 
     user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -112,6 +129,8 @@ class UserPreference(Base):
 
 
 class ClinicalTrial(Base):
+    """Demo outcomes-trial catalog for Text-to-SQL (not a live registry)."""
+
     __tablename__ = "clinical_trials"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -128,6 +147,8 @@ class ClinicalTrial(Base):
 
 
 class IngestJob(Base):
+    """Async ingest job lifecycle tracked for API status polling."""
+
     __tablename__ = "ingest_jobs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)

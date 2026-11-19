@@ -1,3 +1,6 @@
-from app.eval.metrics import citation_correctness, mrr, ndcg_at_k, precision_at_k, recall_at_k
+"""Evaluation harness for retrieval ablation and system ablation.
 
-__all__ = ["recall_at_k", "precision_at_k", "mrr", "ndcg_at_k", "citation_correctness"]
+Compare ``naive`` / ``hybrid`` / ``hybrid_rerank`` retrieval variants and
+``single_llm`` / ``rag_only`` / ``full_agent`` system variants. Metrics and CLI
+entrypoints live in :mod:`app.eval.metrics` and :mod:`app.eval.run`.
+"""

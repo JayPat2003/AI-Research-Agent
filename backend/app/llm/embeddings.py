@@ -1,3 +1,11 @@
+"""Local embedding and cross-encoder rerank factories.
+
+Default path uses fastembed BGE models cached under ``HF_HOME``. The ``hash``
+backend produces deterministic unit vectors for CI / offline unit tests without
+downloading weights. Singletons are process-wide so the first query pays the
+model-load cost once.
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -17,6 +25,7 @@ _reranker = None
 
 
 def _hash_vector(text: str, dim: int) -> list[float]:
+    """Deterministic pseudo-embedding for tests (L2-normalized)."""
     digest = hashlib.sha256(text.encode("utf-8")).digest()
     rng = np.random.default_rng(int.from_bytes(digest[:8], "little"))
     vec = rng.standard_normal(dim).astype(np.float32)
@@ -44,6 +53,7 @@ class Embedder:
         return self._model
 
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        """Embed document passages (no BGE query prefix)."""
         if not texts:
             return []
         if self.backend == "hash":
@@ -53,7 +63,7 @@ class Embedder:
         return [np.asarray(v, dtype=np.float32).tolist() for v in vectors]
 
     def embed_query(self, text: str) -> list[float]:
-        # BGE retrieval: prefix queries
+        """Embed a search query with the BGE retrieval instruction prefix."""
         prefixed = f"Represent this sentence for searching relevant passages: {text}"
         if self.backend == "hash":
             return _hash_vector(prefixed, self.dim)
@@ -61,6 +71,8 @@ class Embedder:
 
 
 class Reranker:
+    """Cross-encoder scorer for query–passage pairs (BGE reranker by default)."""
+
     def __init__(self) -> None:
         self.settings = get_settings()
         self._model = None
@@ -82,6 +94,7 @@ class Reranker:
         return self._model
 
     def score(self, query: str, documents: Sequence[str]) -> list[float]:
+        """Return relevance scores aligned with the input document order."""
         if not documents:
             return []
         if self.settings.embedding_backend == "hash":
@@ -105,6 +118,7 @@ class Reranker:
 
 
 def get_embedder() -> Embedder:
+    """Return the process-wide embedder singleton."""
     global _embedder
     with _lock:
         if _embedder is None:
@@ -113,6 +127,7 @@ def get_embedder() -> Embedder:
 
 
 def get_reranker() -> Reranker:
+    """Return the process-wide reranker singleton."""
     global _reranker
     with _lock:
         if _reranker is None:

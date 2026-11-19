@@ -1,3 +1,15 @@
+"""Async ingestion worker process.
+
+Separate from the API so document parse/embed work does not block SSE query
+handling. The worker:
+
+1. Ensures DB schema + demo catalog/seed docs exist.
+2. Blocks on Redis ``BLPOP`` of ``INGEST_QUEUE``.
+3. Runs :func:`app.ingestion.pipeline.ingest_payload` for each job.
+
+Start with ``python -m app.worker`` (or the Compose ``worker`` service).
+"""
+
 from __future__ import annotations
 
 import json
@@ -8,8 +20,8 @@ from pathlib import Path
 import redis
 
 from app.config import get_settings
-from app.db.session import SyncSessionLocal, init_db_sync
 from app.db.seed_sql import seed_trials
+from app.db.session import SyncSessionLocal, init_db_sync
 from app.ingestion.pipeline import ingest_payload, seed_directory
 
 logging.basicConfig(level=logging.INFO)
@@ -17,6 +29,7 @@ logger = logging.getLogger("worker")
 
 
 def run() -> None:
+    """Blocking main loop for the ingestion worker."""
     settings = get_settings()
     init_db_sync()
     with SyncSessionLocal() as session:

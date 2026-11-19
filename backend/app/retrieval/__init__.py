@@ -1,11 +1,7 @@
-from app.retrieval.fusion import reciprocal_rank_fusion
-from app.retrieval.interface import MetadataFilter, RetrievedChunk, VectorStore
-from app.retrieval.service import RetrievalService
+"""Hybrid retrieval stack over PostgreSQL.
 
-__all__ = [
-    "MetadataFilter",
-    "RetrievedChunk",
-    "VectorStore",
-    "RetrievalService",
-    "reciprocal_rank_fusion",
-]
+Dense search uses ``pgvector``; sparse search uses Postgres full-text search
+(``TSVECTOR``). Results are fused with Reciprocal Rank Fusion and optionally
+reranked with a local cross-encoder. Topical overlap filtering drops off-topic
+private-KB hits so the agent can escalate to live literature when needed.
+"""

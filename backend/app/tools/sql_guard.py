@@ -1,3 +1,10 @@
+"""SQL safety gate for LLM-generated queries.
+
+Rejects anything that is not a single ``SELECT`` against allowlisted tables.
+Uses sqlglot for structural parsing (not regex alone) and injects a ``LIMIT 100``
+when the model omits one, bounding result size for demos and eval.
+"""
+
 from __future__ import annotations
 
 import re
@@ -10,11 +17,14 @@ FORBIDDEN = re.compile(r"\b(insert|update|delete|drop|alter|truncate|grant|revok
 
 
 class UnsafeSQLError(ValueError):
-    pass
+    """Raised when generated SQL violates the read-only allowlist policy."""
 
 
 def validate_select(sql: str, allowed_tables: set[str] | None = None) -> str:
-    """Allow only a single SELECT against allowlisted tables."""
+    """Allow only a single SELECT against allowlisted tables.
+
+    Returns the rewritten Postgres SQL string (with limit enforced).
+    """
     allowed = allowed_tables or ALLOWED_TABLES
     stripped = sql.strip().rstrip(";")
     if ";" in stripped:
